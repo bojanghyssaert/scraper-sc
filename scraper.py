@@ -3,6 +3,7 @@ import re
 import os
 import tkinter as tk
 from tkinter import filedialog
+import threading
 
 
 def choose_save_map():
@@ -92,17 +93,42 @@ def download_track(track_url, client_id):
 
     print(f"klaar, opgeslagen als {full_path}")
 
-    
+
+
+def start_download():
+    url = invoerveld.get()
+
+    if not url:
+        print("voer eerst een URL in.")
+        return
+
+    print(f"starten met downloaden van: {url}")
+
+    download_thread = threading.Thread(target=download_track, args=(url, applicatie_client_id))
+    download_thread.start()
+
 
 
 if __name__ == "__main__":
-    client_id = get_client_id()
+    applicatie_client_id = get_client_id()
 
-    if client_id:
-        print(f"succesvol gevonden: {client_id}")
-        test_url = input("\nPlak een SoundCloud track URL: ")
-        download_track(test_url, client_id)
+    if not applicatie_client_id:
+        print("kon geen client id ophalen, het programma stopt")
 
     else:
-        print("script is gefaald")
+        print(f"client id succesvol gevonden: {applicatie_client_id}")
 
+        venster = tk.Tk()
+        venster.title("SoundCloud to mp3")
+        venster.geometry("450x200")
+
+        uitleg_label = tk.Label(venster, text="Plak hier je SoundCloud link: ")
+        uitleg_label.pack(pady=10)
+
+        invoerveld = tk.Entry(venster, width=50)
+        invoerveld.pack(pady=5)
+
+        download_knop = tk.Button(venster, text="Dowload MP3", command=start_download)
+        download_knop.pack(pady=20)
+
+        venster.mainloop()
