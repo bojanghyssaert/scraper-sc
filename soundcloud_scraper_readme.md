@@ -18,7 +18,7 @@ Zorg dat je **Python 3.x** op je systeem hebt geïnstalleerd.
 
 1. **Clone deze repository:**
    ```bash
-   git clone https://github.com/JOUW_GEBRUIKERSNAAM/soundcloud-scraper.git
+   git clone https://github.com/bojanghyssaert/scraper-sc.git
    cd soundcloud-scraper
    ```
 
