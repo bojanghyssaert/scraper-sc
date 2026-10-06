@@ -1,5 +1,19 @@
 import requests
 import re
+import os
+import tkinter as tk
+from tkinter import filedialog
+
+
+def choose_save_map():
+    root = tk.Tk()
+    root.withdraw()
+
+    root.attributes('-topmost', True)
+
+    map_path = filedialog.askdirectory(title="choose a map to save the file in")
+    return map_path
+
 
 def get_client_id():
 
@@ -64,10 +78,19 @@ def download_track(track_url, client_id):
     safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()
     filename = f"{safe_title}.mp3"
 
-    with open(filename, 'wb') as file:
+    print("\nSelecteer de opslagmap ")
+    savemap = choose_save_map()
+
+    if not savemap:
+        print("Download geannuleerd: geen map geselecteerd")
+        return
+
+    full_path = os.path.join(savemap, filename)
+
+    with open(full_path, 'wb') as file:
         file.write(audio_data)
 
-    print(f"klaar, opgeslagen als {filename}")
+    print(f"klaar, opgeslagen als {full_path}")
 
     
 
