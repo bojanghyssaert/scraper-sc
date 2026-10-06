@@ -1,0 +1,11 @@
+# Python environment
+venv/
+__pycache__/
+
+# Gedownloade audio
+*.mp3
+*.ogg
+*.wav
+
+# Systeem bestanden
+.DS_Store
