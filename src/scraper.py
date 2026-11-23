@@ -32,26 +32,31 @@ def clear_input():
 
 
 def get_client_id():
-
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
-    response = requests.get("https://soundcloud.com", headers=headers)
+    try:
+        response = requests.get("https://soundcloud.com", headers=headers, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        print(f"Fout bij openen van SoundCloud homepage: {e}")
+        return None
 
     script__urls = re.findall(r'<script crossorigin src="(https://a-v2\.sndcdn\.com/assets/[^"]+\.js)"></script>', response.text)
 
     if not script__urls:
-        print("niets gevonden")
+        print("Geen script URLs gevonden op SoundCloud homepage.")
         return None
 
     for url in script__urls:
-        js_content = requests.get(url, headers=headers).text
-        match = re.search(r'client_id:"([a-zA-Z0-9]{32})"', js_content)
-
-        if match:
-            client_id = match.group(1)
-            return client_id
-
+        try:
+            js_response = requests.get(url, headers=headers, timeout=10)
+            if js_response.status_code == 200:
+                match = re.search(r'client_id:"([a-zA-Z0-9]{32})"', js_response.text)
+                if match:
+                    return match.group(1)
+        except requests.RequestException:
+            continue
 
     return None
 
@@ -63,15 +68,28 @@ def download_track(track_url, client_id, savemap):
     update_status("Gegevens ophalen...", "blue")
 
     resolve_url = f"https://api-v2.soundcloud.com/resolve?url={track_url}&client_id={client_id}"
-    response = requests.get(resolve_url, headers=headers)
-
-    if response.status_code != 200:
-        show_ui_message("error", "Fout", "Kan de track niet vinden.")
-        update_status("")
+    try:
+        response = requests.get(resolve_url, headers=headers, timeout=10)
+    except requests.RequestException as e:
+        show_ui_message("error", "Netwerkfout", f"Kan geen verbinding maken met SoundCloud:\n{e}")
+        update_status("Netwerkfout", "red")
         set_download_state(True)
         return
 
-    track_info = response.json()
+    if response.status_code != 200:
+        show_ui_message("error", "Fout", "Kan de track niet vinden of de link is ongeldig.")
+        update_status("Track niet gevonden", "red")
+        set_download_state(True)
+        return
+
+    try:
+        track_info = response.json()
+    except ValueError:
+        show_ui_message("error", "Fout", "Ongeldig antwoord ontvangen van SoundCloud.")
+        update_status("Fout bij verwerken van data", "red")
+        set_download_state(True)
+        return
+
     title = track_info.get('title', 'onbekende_track')
     print(f"Nummer gevonden: {title}")
 
@@ -83,24 +101,58 @@ def download_track(track_url, client_id, savemap):
 
     if not stream_url:
         show_ui_message("error", "Fout", "Kan geen MP3 vinden voor dit liedje.")
-        update_status("")
+        update_status("Geen MP3 beschikbaar", "red")
         set_download_state(True)
         return
 
     update_status("Downloadlink genereren...", "blue")
     stream_url_with_auth = f"{stream_url}?client_id={client_id}"
-    media_response = requests.get(stream_url_with_auth, headers=headers).json()
-    download_url = media_response.get('url')
+    try:
+        media_response = requests.get(stream_url_with_auth, headers=headers, timeout=10)
+        if media_response.status_code != 200:
+            show_ui_message("error", "Fout", "Kon downloadlink niet ophalen van SoundCloud.")
+            update_status("Fout bij downloadlink", "red")
+            set_download_state(True)
+            return
+        download_url = media_response.json().get('url')
+        if not download_url:
+            show_ui_message("error", "Fout", "Geen geldige downloadlocatie gevonden in SoundCloud antwoord.")
+            update_status("Geen downloadlocatie", "red")
+            set_download_state(True)
+            return
+    except (requests.RequestException, ValueError) as e:
+        show_ui_message("error", "Netwerkfout", f"Fout bij ophalen downloadlink:\n{e}")
+        update_status("Fout bij downloadlink", "red")
+        set_download_state(True)
+        return
 
     update_status("Audiobestand downloaden (dit kan even duren)...", "blue")
-    audio_data = requests.get(download_url, headers=headers).content
+    try:
+        audio_response = requests.get(download_url, headers=headers, timeout=10)
+        if audio_response.status_code != 200:
+            show_ui_message("error", "Fout", f"Download mislukt met statuscode {audio_response.status_code}.")
+            update_status("Download mislukt", "red")
+            set_download_state(True)
+            return
+        audio_data = audio_response.content
+    except requests.RequestException as e:
+        show_ui_message("error", "Netwerkfout", f"Fout tijdens het downloaden van audio:\n{e}")
+        update_status("Download mislukt", "red")
+        set_download_state(True)
+        return
 
     safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip() or "track"
     filename = f"{safe_title}.mp3"
     full_path = os.path.join(savemap, filename)
 
-    with open(full_path, 'wb') as file:
-        file.write(audio_data)
+    try:
+        with open(full_path, 'wb') as file:
+            file.write(audio_data)
+    except OSError as e:
+        show_ui_message("error", "Bestandsfout", f"Kon het bestand niet opslaan:\n{e}")
+        update_status("Fout bij opslaan", "red")
+        set_download_state(True)
+        return
 
     update_status("Download succesvol afgerond!", "green")
     clear_input()
@@ -135,8 +187,13 @@ if __name__ == "__main__":
     applicatie_client_id = get_client_id()
 
     if not applicatie_client_id:
-        print("kon geen client id ophalen, het programma stopt")
-
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "Fout bij opstarten",
+            "Kon geen geldige client_id ophalen van SoundCloud.\nControleer je internetverbinding en probeer het opnieuw."
+        )
+        root.destroy()
     else:
         print(f"client id succesvol gevonden: {applicatie_client_id}")
 
