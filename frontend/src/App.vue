@@ -92,6 +92,16 @@
           </div>
         </div>
 
+        <!-- Audio Preview Speler -->
+        <div class="player-block">
+          <span class="field-label">AUDIO VOORBEELD</span>
+          <AudioPlayer
+            ref="audioPlayerRef"
+            :src="previewAudioUrl"
+            :duration-ms="track.duration_ms"
+          />
+        </div>
+
         <!-- Voortgangsbalk -->
         <div class="progress-block">
           <div class="progress-header">
@@ -121,7 +131,8 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import AudioPlayer from './components/AudioPlayer.vue'
 
 const API = 'http://localhost:8000'
 
@@ -135,6 +146,12 @@ const downloadError   = ref('')
 const downloadSuccess = ref('')
 const progress        = ref(0)
 const progressText    = ref('Wachten op download...')
+const audioPlayerRef  = ref(null)
+
+const previewAudioUrl = computed(() => {
+  if (!track.value || !trackUrl.value.trim()) return ''
+  return `${API}/api/preview?url=${encodeURIComponent(trackUrl.value.trim())}`
+})
 
 const trackFormatLabel = computed(() => {
   const ext = (track.value?.extension || (track.value?.filename?.includes('.') ? '.' + track.value.filename.split('.').pop() : '')).toLowerCase()
@@ -157,9 +174,19 @@ async function pasteFromClipboard() {
   }
 }
 
+// ── Reset speler bij wijziging van URL ──
+watch(trackUrl, () => {
+  if (audioPlayerRef.value) {
+    audioPlayerRef.value.reset()
+  }
+})
+
 // ── Track ophalen ──
 async function fetchTrack() {
   if (!trackUrl.value.trim()) return
+  if (audioPlayerRef.value) {
+    audioPlayerRef.value.reset()
+  }
   loading.value = true
   fetchError.value = ''
   drmInfo.value = null
@@ -551,6 +578,9 @@ function formatDuration(ms) {
 .track-artist { color: var(--muted); font-size: .875rem; }
 .track-duration { color: var(--muted); font-size: .8rem; }
 .track-filename { color: var(--muted); font-size: .78rem; word-break: break-all; }
+
+/* Player */
+.player-block { display: flex; flex-direction: column; gap: 8px; }
 
 /* Progress */
 .progress-block { display: flex; flex-direction: column; gap: 8px; }
