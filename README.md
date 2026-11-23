@@ -1,79 +1,140 @@
-# 🎵 SoundCloud Python Scraper
+# 🎵 SoundCloud Downloader — Full-stack webapp
 
-Dit is een educatief project gebouwd in Python om muziek van SoundCloud te downloaden via API reverse engineering. Het script omzeilt de noodzaak voor een officiële API-sleutel door dynamisch de `client_id` uit de frontend van SoundCloud te scrapen en biedt een moderne, donkere grafische interface.
+Educatief full-stack project dat SoundCloud-tracks als MP3 downloadt via API reverse engineering. Bestaat uit een **Python FastAPI-backend** en een **Vue 3 + Vite-frontend** met een moderne, donkere SoundCloud-stijl UI.
 
-*Ontwikkeld als oefenproject voor data-extractie en netwerkanalyse (Toegepaste Informatica).*
+*Ontwikkeld als oefenproject voor data-extractie, netwerkanalyse en full-stack webontwikkeling (Toegepaste Informatica).*
 
 ---
 
 ## ✨ Functionaliteiten
 
-* **🎨 Moderne Donkere Interface:** Strak vormgegeven GUI in SoundCloud-thema (`#181818` donkere achtergrond, `#FF5500` oranje accenten en Segoe UI typografie).
-* **📋 Klembord Integratie:** Met één klik op de **"📋 Plakken"**-knop de SoundCloud-link direct in het invoerveld plaatsen.
-* **🔍 Live Track Preview:** Toont direct na het resolven van de link de **titel en artiest** in de interface vóórdat het downloaden start.
-* **📊 Live Voortgangsbalk:** Nauwkeurige `ttk.Progressbar` die de downloadvoortgang in realtime weergeeft in megabytes en percentage (`MB / MB (%)`) op basis van de `Content-Length`.
-* **⚡ Streaming Downloads:** Audio wordt in chunks van 64 KB gestreamd (`iter_content`) om RAM-pieken te voorkomen, ideaal voor lange DJ-sets en podcasts.
-* **🛡️ Robuuste Foutafhandeling & Thread-Safety:** Volledig asynchrone downloads in een daemon worker-thread met strikte UI-updates via `after()` en time-outs op alle netwerkverzoeken.
+| Onderdeel | Functionaliteit |
+|---|---|
+| 🔌 **FastAPI backend** | `client_id` automatisch ophalen, track resolven, MP3-stream doorsturen |
+| 🎨 **Moderne donkere UI** | SoundCloud-kleurenpalet (`#181818` / `#FF5500`), Inter-typografie, kaarten-layout |
+| 📋 **Klembord-integratie** | "Plakken"-knop voor directe URL-invoer vanuit klembord |
+| 🔍 **Live Track Preview** | Cover, titel, artiest en speelduur direct na URL-invoer |
+| 📊 **Live voortgangsbalk** | Realtime MB- en percentage-weergave op basis van `Content-Length` |
+| 💾 **Windows Verkenner dialoog** | Native `showSaveFilePicker()` opent de echte Verkenner om de doelmap te kiezen |
+| 🔄 **Automatische fallback** | Standaard browser-download voor browsers zonder `showSaveFilePicker` |
 
 ---
 
 ## ⚙️ Hoe het werkt (Onder de motorkap)
 
-In plaats van standaard HTML-scraping, bootst dit script het gedrag van de SoundCloud webplayer na:
-1. **Client ID Extractie:** Het script doorzoekt de dynamische JavaScript-bestanden van de homepage met RegEx om een actieve sessiesleutel (`client_id`) te vinden.
-2. **Metadata Resolving:** Met behulp van de verborgen interne `/resolve` API wordt de openbare track-URL omgezet in nuttige metadata (JSON) met titel en artiest.
-3. **Stream Filtering:** Het script filtert de JSON-data op het `progressive` audio-protocol (standaard MP3) om complexe HLS-streams te vermijden.
-4. **Streaming Download:** De audiostroom wordt in chunks gestreamd (`iter_content`) en direct naar de schijf weggeschreven met live visualisatie van de voortgang.
+1. **Client ID Extractie:** De backend doorzoekt de SoundCloud JS-bestanden met RegEx voor een actieve sessiesleutel (`client_id`).
+2. **Metadata Resolving:** Via de `/resolve` API wordt een track-URL omgezet in JSON met titel, artiest, artwork en stream-URL.
+3. **Stream Filtering:** Alleen het `progressive` protocol (MP3) wordt gebruikt; HLS-streams worden vermeden.
+4. **Streaming via FastAPI:** De backend streamt audio-chunks via `StreamingResponse` naar de browser, inclusief `Content-Length` voor de voortgangsbalk.
+5. **Frontend Streaming:** De Vue-app leest de `ReadableStream` chunk voor chunk en schrijft direct naar het gekozen bestand via de File System Access API.
 
 ---
 
-## 🚀 Installatie en Setup
+## 🏗️ Projectstructuur
 
-Zorg dat je **Python 3.x** op je systeem hebt geïnstalleerd.
+```
+soundcloud-scraper/
+├── backend/
+│   ├── main.py                  # FastAPI applicatie met /api/track en /api/download
+│   └── soundcloud_service.py    # SoundCloud logica (geen GUI-afhankelijkheid)
+├── frontend/
+│   ├── src/
+│   │   ├── App.vue              # Hoofd Vue-component (alles in één)
+│   │   ├── main.js              # Vue app entry point
+│   │   └── style.css            # Globale stijlen (donker thema)
+│   ├── index.html
+│   └── vite.config.js
+├── src/
+│   └── scraper.py               # Originele Tkinter GUI-versie (standalone)
+├── requirements.txt             # Python-afhankelijkheden voor de backend
+└── README.md
+```
 
-1. **Clone deze repository:**
-   ```bash
-   git clone https://github.com/bojanghyssaert/scraper-sc.git
-   cd soundcloud-scraper
-   ```
+---
 
-2. **Maak een virtuele omgeving aan (aanbevolen):**
-   ```bash
-   # Windows
-   python -m venv venv
-   .\venv\Scripts\activate
+## 🚀 Installatie en Opstarten
 
-   # macOS/Linux
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
+### Vereisten
 
-3. **Installeer de benodigde libraries:**
-   ```bash
-   pip install requests
-   ```
+* **Python 3.10+** (voor `str | None` type-syntax)
+* **Node.js 18+** en **npm**
+
+---
+
+### Stap 1 — Repository klonen
+
+```bash
+git clone https://github.com/bojanghyssaert/scraper-sc.git
+cd soundcloud-scraper
+```
+
+---
+
+### Stap 2 — Python backend
+
+#### Virtuele omgeving aanmaken en activeren
+
+```bash
+# Windows
+python -m venv venv
+.\venv\Scripts\activate
+
+# macOS/Linux
+python3 -m venv venv
+source venv/bin/activate
+```
+
+#### Afhankelijkheden installeren
+
+```bash
+pip install -r requirements.txt
+```
+
+#### Backend starten
+
+```bash
+# Vanuit de root van het project
+uvicorn backend.main:app --reload --port 8000
+```
+
+De API is nu beschikbaar op **http://localhost:8000**. Documentatie via Swagger UI: **http://localhost:8000/docs**
+
+---
+
+### Stap 3 — Vue frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+De frontend is nu beschikbaar op **http://localhost:5173**
+
+> [!IMPORTANT]
+> Zorg dat de **backend op poort 8000** actief is vóórdat je de frontend opent.
 
 ---
 
 ## 💻 Gebruik
 
-Start de applicatie via de command line:
+1. **Klik op "📋 Plakken"** of typ een SoundCloud track-URL in het invoerveld.
+2. **Klik op "Zoek track"** — de Track Preview verschijnt met cover, titel, artiest en duur.
+3. **Klik op "⬇️ Download MP3"** — het Windows Verkenner-dialoog opent om de opslaglocatie te kiezen.
+4. De **voortgangsbalk** toont live de downloadstatus in MB en percentage.
+5. Na voltooiing verschijnt een bevestigingsbericht.
 
-```bash
-python src/scraper.py
-```
+---
 
-1. **Opstarten:** De applicatie zoekt automatisch naar een actieve sessiesleutel (`client_id`) en opent het venster.
-2. **Link invoeren:** Klik op **"📋 Plakken"** om een gekopieerde SoundCloud track-URL in te voegen (of typ/plak handmatig).
-3. **Downloaden:** 
-   - Klik op **"Download MP3"**.
-   - Kies de gewenste doelmap in de pop-up.
-   - De **Track Preview** toont meteen de titel en artiest.
-   - De **Voortgangsbalk** toont live de downloadstatus (in MB en %).
-4. **Voltooid:** Na afronding verschijnt een bevestigingsbericht en is het MP3-bestand direct klaar voor gebruik.
+## 🔌 API Referentie
+
+| Endpoint | Methode | Parameters | Response |
+|---|---|---|---|
+| `/api/track` | GET | `url` (string) | JSON: `title`, `artist`, `artwork_url`, `duration_ms`, `filename` |
+| `/api/download` | GET | `url` (string) | MP3 stream (`audio/mpeg`) met `Content-Disposition` en `Content-Length` |
 
 ---
 
 ## ⚠️ Disclaimer
 
-Dit project is uitsluitend gemaakt voor **educatieve doeleinden** (het bestuderen van netwerkverkeer en API-structuren). Het ongeautoriseerd downloaden van auteursrechtelijk beschermd materiaal is in strijd met de Algemene Voorwaarden van SoundCloud. Gebruik deze tool alleen voor je eigen tracks of audio die onder een vrije licentie (zoals Creative Commons) valt.
+Dit project is uitsluitend gemaakt voor **educatieve doeleinden** (het bestuderen van netwerkverkeer, API-structuren en full-stack webontwikkeling). Het ongeautoriseerd downloaden van auteursrechtelijk beschermd materiaal is in strijd met de Algemene Voorwaarden van SoundCloud. Gebruik deze tool alleen voor je eigen tracks of audio die onder een vrije licentie (zoals Creative Commons) valt.
