@@ -817,8 +817,17 @@ def test_get_track_info_only_m4a_stream():
             ]
         },
     }
+    mock_stream = MagicMock()
+    mock_stream.status_code = 200
+    mock_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/playlist.m3u8"}
+
+    def mock_get(url, *args, **kwargs):
+        if "hls_m4a" in url:
+            return mock_stream
+        return mock_resolve
+
     with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
-         patch("backend.soundcloud_service.requests.get", return_value=mock_resolve):
+         patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
 
         info = get_track_info("https://soundcloud.com/solo/m4a-track")
         assert info["format_id"] == "m4a"
