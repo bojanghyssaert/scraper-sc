@@ -18,6 +18,7 @@ from backend.soundcloud_service import (
     search_tracks,
     stream_audio,
     embed_metadata,
+    convert_m4a_to_mp3,
     download_tracks_as_zip,
     _cached_client_id,
 )
@@ -770,10 +771,42 @@ def test_get_track_info_select_m4a_format():
 
         info = get_track_info("https://soundcloud.com/select/track", format_id="m4a")
         assert info["format_id"] == "m4a"
-        assert info["extension"] == ".m4a"
-        assert info["media_type"] == "audio/mp4"
+        assert info["extension"] == ".mp3"
+        assert info["media_type"] == "audio/mpeg"
         assert info["stream_url"] == "https://api-v2.soundcloud.com/media/hls_m4a"
-        assert info["filename"].endswith(".m4a")
+        assert info["filename"].endswith(".mp3")
+        assert info["is_m4a"] is True
+
+
+def test_get_track_info_only_m4a_stream():
+    """Verifieert dat wanneer een track alleen een M4A-stream heeft, deze automatisch als MP3 wordt aangeboden."""
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "Solo M4A Track",
+        "user": {"username": "Solo Artist"},
+        "duration": 150000,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "hls", "mime_type": "audio/mp4"},
+                    "url": "https://api-v2.soundcloud.com/media/hls_m4a",
+                },
+            ]
+        },
+    }
+    with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
+         patch("backend.soundcloud_service.requests.get", return_value=mock_resolve):
+
+        info = get_track_info("https://soundcloud.com/solo/m4a-track")
+        assert info["format_id"] == "m4a"
+        assert info["extension"] == ".mp3"
+        assert info["media_type"] == "audio/mpeg"
+        assert info["filename"] == "Solo Artist - Solo M4A Track.mp3"
+        assert info["is_m4a"] is True
+        assert len(info["formats"]) == 1
+        assert info["formats"][0]["label"] == "MP3 (via M4A)"
+        assert info["formats"][0]["extension"] == ".mp3"
 
 
 def test_get_track_info_official_download_with_formats():
@@ -1010,5 +1043,144 @@ def test_download_tracks_as_zip_empty():
     """Verifieert dat een lege lijst van track_urls een SoundCloudError opwerpt."""
     with pytest.raises(SoundCloudError, match="Geen tracks opgegeven"):
         download_tracks_as_zip([])
+
+
+def test_convert_m4a_to_mp3_empty_input():
+    """Verifieert dat een lege byte-string direct een SoundCloudError oplevert."""
+    with pytest.raises(SoundCloudError, match="Geen audiogegevens ontvangen"):
+        convert_m4a_to_mp3(b"")
+
+
+def test_convert_m4a_to_mp3_ffmpeg_not_found():
+    """Verifieert dat ontbreken van FFmpeg een SoundCloudError oplevert."""
+    with patch("shutil.which", return_value=None), \
+         patch("imageio_ffmpeg.get_ffmpeg_exe", return_value=None):
+        with pytest.raises(SoundCloudError, match="FFmpeg executable niet gevonden"):
+            convert_m4a_to_mp3(b"dummy_m4a_bytes")
+
+
+def test_convert_m4a_to_mp3_called_process_error():
+    """Verifieert dat een fout in het FFmpeg-proces netjes wordt opgevangen in een SoundCloudError."""
+    import subprocess
+    err = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["ffmpeg"],
+        stderr=b"Invalid data found when processing input",
+    )
+    with patch("shutil.which", return_value="ffmpeg"), \
+         patch("subprocess.run", side_effect=err):
+        with pytest.raises(SoundCloudError) as exc_info:
+            convert_m4a_to_mp3(b"corrupt_m4a_data")
+        assert "Invalid data found when processing input" in str(exc_info.value)
+
+
+def test_convert_m4a_to_mp3_missing_output():
+    """Verifieert dat wanneer output.mp3 niet gegenereerd is, een SoundCloudError optreedt."""
+    with patch("shutil.which", return_value="ffmpeg"), \
+         patch("subprocess.run") as mock_run:
+        # subprocess.run slaagt, maar maakt geen output.mp3 aan
+        with pytest.raises(SoundCloudError, match="FFmpeg heeft geen output.mp3 bestand gegenereerd"):
+            convert_m4a_to_mp3(b"dummy_m4a_data")
+
+
+def test_convert_m4a_to_mp3_mocked_success():
+    """Verifieert een succesvolle conversie via gemockte subprocess.run en controleert opruiming van tijdelijke bestanden."""
+    from pathlib import Path
+    temp_dirs_created = []
+
+    def fake_subprocess_run(cmd, check, capture_output):
+        out_path = Path(cmd[-1])
+        temp_dirs_created.append(out_path.parent)
+        out_path.write_bytes(b"\xff\xfb\x90\x64" + b"mocked_mp3_data")
+        return MagicMock(returncode=0)
+
+    with patch("shutil.which", return_value="ffmpeg"), \
+         patch("subprocess.run", side_effect=fake_subprocess_run):
+        result = convert_m4a_to_mp3(b"input_m4a_bytes")
+        assert result.startswith(b"\xff\xfb\x90\x64")
+        assert b"mocked_mp3_data" in result
+
+    # Controleer dat de tijdelijke directory na afloop niet meer bestaat
+    for d in temp_dirs_created:
+        assert not d.exists()
+
+
+def test_convert_m4a_to_mp3_real_ffmpeg_and_embed_metadata():
+    """Verifieert echte conversie via imageio-ffmpeg en controleert dat ID3-tags correct worden toegevoegd."""
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    import imageio_ffmpeg
+    from mutagen.id3 import ID3
+
+    ffmpeg_exe = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
+    assert ffmpeg_exe is not None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_m4a_path = Path(tmpdir) / "test.m4a"
+        # Genereer 0.5s audio sine wave als M4A/AAC
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", "-c:a", "aac", str(test_m4a_path)],
+            check=True,
+            capture_output=True,
+        )
+        raw_m4a_bytes = test_m4a_path.read_bytes()
+
+    # Converteer naar MP3
+    mp3_bytes = convert_m4a_to_mp3(raw_m4a_bytes)
+    assert len(mp3_bytes) > 0
+
+    # Voeg ID3 metadata toe
+    track_info = {
+        "title": "Real Converted Track",
+        "artist": "Real Converted Artist",
+        "artwork_url": "",
+    }
+    tagged_mp3 = embed_metadata(mp3_bytes, ".mp3", track_info)
+
+    # Lees tags uit met Mutagen
+    import io
+    tags = ID3(io.BytesIO(tagged_mp3))
+    assert str(tags.get("TIT2")) == "Real Converted Track"
+    assert str(tags.get("TPE1")) == "Real Converted Artist"
+
+
+def test_download_tracks_as_zip_converts_m4a():
+    """Verifieert dat download_tracks_as_zip M4A-tracks converteert naar MP3 en van ID3-tags voorziet."""
+    import zipfile
+    import io
+    from mutagen.id3 import ID3
+
+    mock_m4a_info = {
+        "type": "track",
+        "title": "M4A Zip Track",
+        "artist": "M4A Zip Artist",
+        "filename": "M4A Zip Artist - M4A Zip Track.mp3",
+        "extension": ".mp3",
+        "media_type": "audio/mpeg",
+        "stream_url": "https://api-v2.soundcloud.com/media/hls_m4a",
+        "stream_protocol": "hls",
+        "is_m4a": True,
+        "format_id": "m4a",
+    }
+
+    dummy_mp3_base = b"\xff\xfb\x90\x64" + b"\x00" * 400
+
+    with patch("backend.soundcloud_service.get_track_info", return_value=mock_m4a_info), \
+         patch("backend.soundcloud_service.get_download_url", return_value="https://cdn.com/playlist.m3u8"), \
+         patch("backend.soundcloud_service.stream_audio", return_value=iter([b"m4a_zip_audio"])), \
+         patch("backend.soundcloud_service.convert_m4a_to_mp3", return_value=dummy_mp3_base) as mock_convert:
+
+        zip_data = download_tracks_as_zip(["https://soundcloud.com/artist/m4a-zip-track"], client_id="test_cid")
+        assert len(zip_data) > 0
+        mock_convert.assert_called_once_with(b"m4a_zip_audio")
+
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+            assert "M4A Zip Artist - M4A Zip Track.mp3" in zf.namelist()
+            file_bytes = zf.read("M4A Zip Artist - M4A Zip Track.mp3")
+            tags = ID3(io.BytesIO(file_bytes))
+            assert str(tags.get("TIT2")) == "M4A Zip Track"
+            assert str(tags.get("TPE1")) == "M4A Zip Artist"
 
 
