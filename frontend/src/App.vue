@@ -77,7 +77,7 @@
           :disabled="downloading"
         >
           <span v-if="downloading" class="spinner"></span>
-          <span v-else>⬇️ Download MP3</span>
+          <span v-else>⬇️ Download {{ trackFormatLabel }}</span>
         </button>
 
         <p v-if="downloadError" class="status error">❌ {{ downloadError }}</p>
@@ -88,7 +88,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 const API = 'http://localhost:8000'
 
@@ -101,6 +101,13 @@ const downloadError = ref('')
 const downloadSuccess = ref('')
 const progress      = ref(0)
 const progressText  = ref('Wachten op download...')
+
+const trackFormatLabel = computed(() => {
+  if (track.value?.filename?.toLowerCase().endsWith('.ogg') || track.value?.extension === '.ogg') {
+    return 'OGG (Opus)'
+  }
+  return 'MP3'
+})
 
 // ── Klembord ──
 async function pasteFromClipboard() {
@@ -162,6 +169,10 @@ async function downloadTrack() {
 
     // Probeer native File System Access API (Windows Verkenner dialoog)
     const useFSA = typeof window.showSaveFilePicker === 'function'
+    const isOgg = track.value.filename.toLowerCase().endsWith('.ogg') || track.value.extension === '.ogg'
+    const pickerTypes = isOgg
+      ? [{ description: 'OGG-audiobestand', accept: { 'audio/ogg': ['.ogg'] } }]
+      : [{ description: 'MP3-audiobestand', accept: { 'audio/mpeg': ['.mp3'] } }]
 
     let fileHandle = null
     let writable = null
@@ -171,7 +182,7 @@ async function downloadTrack() {
       try {
         fileHandle = await window.showSaveFilePicker({
           suggestedName: track.value.filename,
-          types: [{ description: 'MP3-audiobestand', accept: { 'audio/mpeg': ['.mp3'] } }],
+          types: pickerTypes,
         })
         writable = await fileHandle.createWritable()
       } catch (err) {
@@ -219,7 +230,8 @@ async function downloadTrack() {
       downloadSuccess.value = `'${track.value.title}' is succesvol opgeslagen!`
     } else {
       // Fallback: <a download> in de browser
-      const blob = new Blob(chunks, { type: 'audio/mpeg' })
+      const mime = track.value.media_type || (isOgg ? 'audio/ogg' : 'audio/mpeg')
+      const blob = new Blob(chunks, { type: mime })
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
       a.href     = url

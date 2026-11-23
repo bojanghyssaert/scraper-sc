@@ -80,13 +80,15 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
         "artwork_url": info["artwork_url"],
         "duration_ms": info["duration_ms"],
         "filename": info["filename"],
+        "extension": info.get("extension", ".mp3"),
+        "media_type": info.get("media_type", "audio/mpeg"),
     }
 
 
 @app.get("/api/download")
 def download_track(url: str = Query(..., description="Publieke SoundCloud track-URL")):
     """
-    Streamt het MP3-bestand met de juiste Content-Disposition en Content-Length headers.
+    Streamt het audiobestand met de juiste Content-Disposition en Content-Length headers.
     """
     client_id = _get_cached_client_id()
 
@@ -114,6 +116,8 @@ def download_track(url: str = Query(..., description="Publieke SoundCloud track-
         except Exception:
             pass  # Content-Length is optioneel; stream gaat door zonder
 
+    media_type = info.get("media_type", "audio/mpeg")
+
     headers = {
         "Content-Disposition": f'attachment; filename="{info["filename"]}"',
         "Cache-Control": "no-cache",
@@ -128,6 +132,6 @@ def download_track(url: str = Query(..., description="Publieke SoundCloud track-
 
     return StreamingResponse(
         generator,
-        media_type="audio/mpeg",
+        media_type=media_type,
         headers=headers,
     )
