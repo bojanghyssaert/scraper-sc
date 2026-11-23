@@ -9,5 +9,9 @@ __pycache__/
 *.ogg
 *.wav
 
+# Logs
+logs/
+*.log
+
 # Systeem bestanden
 .DS_Store
