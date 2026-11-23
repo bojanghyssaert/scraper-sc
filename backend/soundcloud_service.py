@@ -6,10 +6,13 @@ track-metadata en de download-URL — zonder enige GUI-afhankelijkheid.
 """
 
 import concurrent.futures
+import io
 import re
 import urllib.parse
 from typing import Callable
 import requests
+from mutagen.id3 import ID3, TIT2, TPE1, APIC, ID3NoHeaderError
+from mutagen.mp4 import MP4, MP4Cover
 
 HEADERS = {
     "User-Agent": (
@@ -616,3 +619,92 @@ def stream_audio(download_url: str):
                         yield chunk
         except requests.RequestException as exc:
             raise SoundCloudError(f"Netwerkfout tijdens streamen: {exc}") from exc
+
+
+def embed_metadata(audio_bytes: bytes, extension: str, info: dict) -> bytes:
+    """
+    Voegt metadata (titel, artiest en cover-art) toe aan de gedownloade audio-bytes.
+    Ondersteunt ID3 tags voor .mp3 en MP4 tags voor .m4a.
+    Faalt veilig en geeft bij fouten of niet-ondersteunde formaten de ongewijzigde audio-bytes terug.
+    """
+    if not audio_bytes:
+        return audio_bytes
+
+    ext = ("." + extension.lstrip(".")).lower() if extension else ".mp3"
+
+    # Haal cover art op indien artwork_url aanwezig is
+    artwork_data: bytes | None = None
+    artwork_url = info.get("artwork_url")
+    if artwork_url and isinstance(artwork_url, str) and artwork_url.strip():
+        try:
+            resp = requests.get(artwork_url.strip(), headers=HEADERS, timeout=4)
+            if resp.status_code == 200 and resp.content:
+                artwork_data = resp.content
+        except Exception:
+            # Faal veilig als de cover-afbeelding niet laadt
+            artwork_data = None
+
+    title = info.get("title") or ""
+    artist = info.get("artist") or ""
+
+    if ext == ".mp3":
+        try:
+            bio = io.BytesIO(audio_bytes)
+            try:
+                tags = ID3(bio)
+            except ID3NoHeaderError:
+                tags = ID3()
+            except Exception:
+                tags = ID3()
+
+            if title:
+                tags.add(TIT2(encoding=3, text=str(title)))
+            if artist:
+                tags.add(TPE1(encoding=3, text=str(artist)))
+
+            if artwork_data:
+                mime = "image/png" if artwork_data.startswith(b"\x89PNG") else "image/jpeg"
+                tags.add(
+                    APIC(
+                        encoding=3,
+                        mime=mime,
+                        type=3,  # Cover (front)
+                        desc="Cover",
+                        data=artwork_data,
+                    )
+                )
+
+            tags.save(bio)
+            return bio.getvalue()
+        except Exception:
+            # Faal veilig als metadata-tagging mislukt
+            return audio_bytes
+
+    elif ext in (".m4a", ".mp4"):
+        try:
+            bio = io.BytesIO(audio_bytes)
+            audio = MP4(fileobj=bio)
+            if audio.tags is None:
+                audio.add_tags()
+
+            if title:
+                audio["\xa9nam"] = [str(title)]
+            if artist:
+                audio["\xa9ART"] = [str(artist)]
+
+            if artwork_data:
+                img_format = (
+                    MP4Cover.FORMAT_PNG
+                    if artwork_data.startswith(b"\x89PNG")
+                    else MP4Cover.FORMAT_JPEG
+                )
+                audio["covr"] = [MP4Cover(artwork_data, imageformat=img_format)]
+
+            audio.save(bio)
+            return bio.getvalue()
+        except Exception:
+            # Faal veilig als metadata-tagging mislukt
+            return audio_bytes
+
+    return audio_bytes
+

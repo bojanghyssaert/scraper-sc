@@ -108,31 +108,36 @@ def test_api_track_drm_protected(client):
 
 
 def test_api_download_success(client):
-    """Verifieert dat /api/download audio streamt met correcte headers."""
+    """Verifieert dat /api/download audio streamt met accurate Content-Length en metadata."""
+    import io
+    from mutagen.id3 import ID3
+
     mock_info = {
         "title": "Streamed Track",
         "artist": "Streamed Artist",
         "filename": "Streamed Artist - Streamed Track.mp3",
         "media_type": "audio/mpeg",
+        "extension": ".mp3",
         "stream_url": "https://api-v2.soundcloud.com/media/stream_dl",
         "stream_protocol": "progressive",
     }
 
-    mock_head = MagicMock()
-    mock_head.headers = {"content-length": "1048576"}
-
     with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
          patch("backend.main.get_track_info", return_value=mock_info), \
          patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/audio.mp3"), \
-         patch("backend.main.req_lib.head", return_value=mock_head), \
          patch("backend.main.stream_audio", return_value=iter([b"fake_mp3_data_chunk_1", b"fake_mp3_data_chunk_2"])):
 
         response = client.get("/api/download?url=https://soundcloud.com/artist/streamed-track")
         assert response.status_code == 200
         assert response.headers["content-type"] == "audio/mpeg"
         assert 'attachment; filename="Streamed Artist - Streamed Track.mp3"' in response.headers["content-disposition"]
-        assert response.headers["content-length"] == "1048576"
-        assert response.content == b"fake_mp3_data_chunk_1fake_mp3_data_chunk_2"
+        assert response.headers["content-length"] == str(len(response.content))
+        assert b"fake_mp3_data_chunk_1fake_mp3_data_chunk_2" in response.content
+
+        # Verifieer ID3-tags in de geretourneerde response-bytes
+        tags = ID3(io.BytesIO(response.content))
+        assert str(tags.get("TIT2")) == "Streamed Track"
+        assert str(tags.get("TPE1")) == "Streamed Artist"
 
 
 def test_api_search_success(client):

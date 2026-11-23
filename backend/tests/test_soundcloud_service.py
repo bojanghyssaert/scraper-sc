@@ -17,6 +17,7 @@ from backend.soundcloud_service import (
     get_download_url,
     search_tracks,
     stream_audio,
+    embed_metadata,
     _cached_client_id,
 )
 
@@ -402,3 +403,163 @@ def test_stream_audio_hls_worker_network_error():
         with pytest.raises(SoundCloudError) as exc_info:
             list(stream_audio("https://cf-media.sndcdn.com/playlist.m3u8"))
         assert "Netwerkfout tijdens streamen van segment" in str(exc_info.value)
+
+
+def test_embed_metadata_mp3_with_artwork():
+    """Verifieert dat ID3 tags (TIT2, TPE1, APIC) correct worden toegevoegd aan MP3."""
+    import io
+    from mutagen.id3 import ID3
+
+    raw_audio = b"FAKE_MP3_STREAM_CONTENT_12345"
+    info = {
+        "title": "Zomerbries",
+        "artist": "De Artiest",
+        "artwork_url": "https://i1.sndcdn.com/artworks-sample-t500x500.jpg",
+    }
+    fake_artwork = b"\xff\xd8\xff\xe0" + b"\x00" * 20
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = fake_artwork
+
+    with patch("backend.soundcloud_service.requests.get", return_value=mock_resp) as mock_get:
+        tagged_bytes = embed_metadata(raw_audio, ".mp3", info)
+        assert tagged_bytes != raw_audio
+        assert tagged_bytes.endswith(raw_audio)
+        assert mock_get.call_count == 1
+
+        tags = ID3(io.BytesIO(tagged_bytes))
+        assert str(tags.get("TIT2")) == "Zomerbries"
+        assert str(tags.get("TPE1")) == "De Artiest"
+        apic_frames = tags.getall("APIC")
+        assert len(apic_frames) == 1
+        assert apic_frames[0].mime == "image/jpeg"
+        assert apic_frames[0].data == fake_artwork
+
+
+def test_embed_metadata_mp3_with_png_artwork():
+    """Verifieert dat PNG artwork wordt herkend en als image/png wordt getagd."""
+    import io
+    from mutagen.id3 import ID3
+
+    raw_audio = b"FAKE_MP3_PNG"
+    info = {
+        "title": "PNG Track",
+        "artist": "PNG Artist",
+        "artwork_url": "https://i1.sndcdn.com/artworks-png.png",
+    }
+    fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = fake_png
+
+    with patch("backend.soundcloud_service.requests.get", return_value=mock_resp):
+        tagged = embed_metadata(raw_audio, "mp3", info)
+        tags = ID3(io.BytesIO(tagged))
+        apic = tags.getall("APIC")[0]
+        assert apic.mime == "image/png"
+        assert apic.data == fake_png
+
+
+def test_embed_metadata_mp3_artwork_download_fails_safe():
+    """
+    Verifieert dat een mislukte cover-download (bijv. timeout of netwerkfout)
+    de audiodownload en het taggen van titel/artiest niet blokkeert.
+    """
+    import io
+    from mutagen.id3 import ID3
+
+    raw_audio = b"SAFE_AUDIO_STREAM_CONTENT"
+    info = {
+        "title": "Robuuste Track",
+        "artist": "Robuuste Artiest",
+        "artwork_url": "https://i1.sndcdn.com/artworks-broken.jpg",
+    }
+
+    with patch("backend.soundcloud_service.requests.get", side_effect=requests.RequestException("Connection timeout")):
+        tagged_bytes = embed_metadata(raw_audio, ".mp3", info)
+        assert tagged_bytes.endswith(raw_audio)
+
+        tags = ID3(io.BytesIO(tagged_bytes))
+        assert str(tags.get("TIT2")) == "Robuuste Track"
+        assert str(tags.get("TPE1")) == "Robuuste Artiest"
+        assert len(tags.getall("APIC")) == 0
+
+
+def test_embed_metadata_m4a_with_artwork():
+    """Verifieert dat MP4 tags (\xa9nam, \xa9ART, covr) correct worden toegevoegd aan .m4a."""
+    import struct
+    import io
+    from mutagen.mp4 import MP4, Atom
+
+    ftyp = Atom.render(b"ftyp", b"M4A \x00\x00\x00\x00M4A mp42isom")
+    mvhd_body = b"\x00\x00\x00\x00" + struct.pack(">LLLL", 0, 0, 1000, 1000) + b"\x00" * 80
+    mvhd = Atom.render(b"mvhd", mvhd_body)
+    udta = Atom.render(b"udta", b"")
+    moov = Atom.render(b"moov", mvhd + udta)
+    raw_m4a = ftyp + moov
+
+    info = {
+        "title": "M4A Track",
+        "artist": "M4A Artist",
+        "artwork_url": "https://i1.sndcdn.com/artworks-m4a.jpg",
+    }
+    fake_artwork = b"\xff\xd8\xff\xe0" + b"\x00" * 30
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = fake_artwork
+
+    with patch("backend.soundcloud_service.requests.get", return_value=mock_resp):
+        tagged_bytes = embed_metadata(raw_m4a, ".m4a", info)
+        assert tagged_bytes != raw_m4a
+
+        audio = MP4(fileobj=io.BytesIO(tagged_bytes))
+        assert audio["\xa9nam"] == ["M4A Track"]
+        assert audio["\xa9ART"] == ["M4A Artist"]
+        assert len(audio["covr"]) == 1
+        assert bytes(audio["covr"][0]) == fake_artwork
+
+
+def test_embed_metadata_m4a_artwork_download_fails_safe():
+    """Verifieert dat MP4 tagging faal-veilig is bij een mislukte artwork download."""
+    import struct
+    import io
+    from mutagen.mp4 import MP4, Atom
+
+    ftyp = Atom.render(b"ftyp", b"M4A \x00\x00\x00\x00M4A mp42isom")
+    mvhd_body = b"\x00\x00\x00\x00" + struct.pack(">LLLL", 0, 0, 1000, 1000) + b"\x00" * 80
+    mvhd = Atom.render(b"mvhd", mvhd_body)
+    udta = Atom.render(b"udta", b"")
+    moov = Atom.render(b"moov", mvhd + udta)
+    raw_m4a = ftyp + moov
+
+    info = {
+        "title": "M4A Safe Track",
+        "artist": "M4A Safe Artist",
+        "artwork_url": "https://i1.sndcdn.com/artworks-fail.jpg",
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 500
+    mock_resp.content = b"Internal Server Error"
+
+    with patch("backend.soundcloud_service.requests.get", return_value=mock_resp):
+        tagged_bytes = embed_metadata(raw_m4a, ".m4a", info)
+        audio = MP4(fileobj=io.BytesIO(tagged_bytes))
+        assert audio["\xa9nam"] == ["M4A Safe Track"]
+        assert audio["\xa9ART"] == ["M4A Safe Artist"]
+        assert "covr" not in audio
+
+
+def test_embed_metadata_unsupported_or_empty_returns_original():
+    """Verifieert dat onbekende extensies, lege data of corrupties veilig de originele bytes teruggeven."""
+    assert embed_metadata(b"", ".mp3", {}) == b""
+
+    wav_data = b"RIFF1234WAVEfmt "
+    assert embed_metadata(wav_data, ".wav", {"title": "WAV Track"}) == wav_data
+
+    corrupt_mp4 = b"not a valid mp4 file at all"
+    assert embed_metadata(corrupt_mp4, ".m4a", {"title": "Corrupt"}) == corrupt_mp4
+
