@@ -1,0 +1,39 @@
+/* Reset & base */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg:          #181818;
+  --card:        #242424;
+  --input-bg:    #2D2D2D;
+  --border:      #3D3D3D;
+  --text:        #F5F5F5;
+  --muted:       #A0A0A0;
+  --accent:      #FF5500;
+  --accent-h:    #FF6A22;
+  --success:     #00E676;
+  --error:       #FF5252;
+  --radius:      10px;
+  --font:        'Inter', 'Segoe UI', sans-serif;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 16px 80px;
+}
