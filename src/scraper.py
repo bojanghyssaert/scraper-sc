@@ -127,27 +127,27 @@ def download_track(track_url, client_id, savemap):
         return
 
     update_status("Audiobestand downloaden (dit kan even duren)...", "blue")
-    try:
-        audio_response = requests.get(download_url, headers=headers, timeout=10)
-        if audio_response.status_code != 200:
-            show_ui_message("error", "Fout", f"Download mislukt met statuscode {audio_response.status_code}.")
-            update_status("Download mislukt", "red")
-            set_download_state(True)
-            return
-        audio_data = audio_response.content
-    except requests.RequestException as e:
-        show_ui_message("error", "Netwerkfout", f"Fout tijdens het downloaden van audio:\n{e}")
-        update_status("Download mislukt", "red")
-        set_download_state(True)
-        return
-
     safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip() or "track"
     filename = f"{safe_title}.mp3"
     full_path = os.path.join(savemap, filename)
 
     try:
-        with open(full_path, 'wb') as file:
-            file.write(audio_data)
+        with requests.get(download_url, headers=headers, stream=True, timeout=10) as audio_response:
+            if audio_response.status_code != 200:
+                show_ui_message("error", "Fout", f"Download mislukt met statuscode {audio_response.status_code}.")
+                update_status("Download mislukt", "red")
+                set_download_state(True)
+                return
+
+            with open(full_path, 'wb') as file:
+                for chunk in audio_response.iter_content(chunk_size=1024 * 64):
+                    if chunk:
+                        file.write(chunk)
+    except requests.RequestException as e:
+        show_ui_message("error", "Netwerkfout", f"Fout tijdens het downloaden van audio:\n{e}")
+        update_status("Download mislukt", "red")
+        set_download_state(True)
+        return
     except OSError as e:
         show_ui_message("error", "Bestandsfout", f"Kon het bestand niet opslaan:\n{e}")
         update_status("Fout bij opslaan", "red")
