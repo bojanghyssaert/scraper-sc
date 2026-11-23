@@ -113,10 +113,9 @@ def get_track_info(track_url: str, client_id: str) -> dict:
     # 2. hls met ("mpegurl" in mime_type of "mpeg" in mime_type) (.mp3, audio/mpeg)
     # 3. hls met "mp4" in mime_type (.m4a, audio/mp4)
     transcodings = data.get("media", {}).get("transcodings", [])
-    stream_url = None
-    stream_protocol = None
-    media_type = None
-    extension = None
+    track_authorization = data.get("track_authorization")
+
+    candidates = []
 
     # 1. Progressive met "mpeg" in mime_type
     for transcoding in transcodings:
@@ -126,41 +125,74 @@ def get_track_info(track_url: str, client_id: str) -> dict:
         if "encrypted" in protocol.lower():
             continue
         if protocol == "progressive" and "mpeg" in mime:
-            stream_url = transcoding.get("url")
-            stream_protocol = "progressive"
-            media_type = "audio/mpeg"
-            extension = ".mp3"
+            candidates.append({
+                "stream_url": transcoding.get("url"),
+                "stream_protocol": "progressive",
+                "media_type": "audio/mpeg",
+                "extension": ".mp3",
+            })
             break
 
     # 2. HLS met "mpegurl" of "mpeg" in mime_type
-    if not stream_url:
-        for transcoding in transcodings:
-            fmt = transcoding.get("format", {})
-            protocol = fmt.get("protocol", "")
-            mime = fmt.get("mime_type", "")
-            if "encrypted" in protocol.lower():
-                continue
-            if protocol == "hls" and ("mpegurl" in mime or "mpeg" in mime):
-                stream_url = transcoding.get("url")
-                stream_protocol = "hls"
-                media_type = "audio/mpeg"
-                extension = ".mp3"
-                break
+    for transcoding in transcodings:
+        fmt = transcoding.get("format", {})
+        protocol = fmt.get("protocol", "")
+        mime = fmt.get("mime_type", "")
+        if "encrypted" in protocol.lower():
+            continue
+        if protocol == "hls" and ("mpegurl" in mime or "mpeg" in mime):
+            candidates.append({
+                "stream_url": transcoding.get("url"),
+                "stream_protocol": "hls",
+                "media_type": "audio/mpeg",
+                "extension": ".mp3",
+            })
+            break
 
     # 3. HLS met "mp4" in mime_type
-    if not stream_url:
-        for transcoding in transcodings:
-            fmt = transcoding.get("format", {})
-            protocol = fmt.get("protocol", "")
-            mime = fmt.get("mime_type", "")
-            if "encrypted" in protocol.lower():
-                continue
-            if protocol == "hls" and "mp4" in mime:
-                stream_url = transcoding.get("url")
-                stream_protocol = "hls"
-                media_type = "audio/mp4"
-                extension = ".m4a"
+    for transcoding in transcodings:
+        fmt = transcoding.get("format", {})
+        protocol = fmt.get("protocol", "")
+        mime = fmt.get("mime_type", "")
+        if "encrypted" in protocol.lower():
+            continue
+        if protocol == "hls" and "mp4" in mime:
+            candidates.append({
+                "stream_url": transcoding.get("url"),
+                "stream_protocol": "hls",
+                "media_type": "audio/mp4",
+                "extension": ".m4a",
+            })
+            break
+
+    stream_url = None
+    stream_protocol = None
+    media_type = None
+    extension = None
+
+    # Valideer kandidaten in prioriteitsvolgorde; sla streams over die 404 geven bij SoundCloud
+    for cand in candidates:
+        try:
+            params = {"client_id": client_id}
+            if track_authorization:
+                params["track_authorization"] = track_authorization
+            chk = requests.get(cand["stream_url"], params=params, headers=HEADERS, timeout=TIMEOUT)
+            if chk.status_code == 200 and chk.json().get("url"):
+                stream_url = cand["stream_url"]
+                stream_protocol = cand["stream_protocol"]
+                media_type = cand["media_type"]
+                extension = cand["extension"]
                 break
+        except Exception:
+            continue
+
+    # Fallback op eerste kandidaat als alle validatiechecks faalden (bijv. bij tijdelijke netwerkfout)
+    if not stream_url and candidates:
+        first = candidates[0]
+        stream_url = first["stream_url"]
+        stream_protocol = first["stream_protocol"]
+        media_type = first["media_type"]
+        extension = first["extension"]
 
     if not stream_url:
         # Lijst van beschikbare formaten printen naar de terminal
