@@ -261,6 +261,101 @@
         <p v-if="downloadSuccess" class="status success">✅ {{ downloadSuccess }}</p>
       </section>
     </transition>
+
+    <!-- ── Playlist / Album Kaart ── -->
+    <transition name="fade">
+      <section v-if="playlist" class="card playlist-card">
+        <div class="preview">
+          <img
+            v-if="playlist.artwork_url"
+            :src="playlist.artwork_url"
+            :alt="`Cover van ${playlist.title}`"
+            class="artwork"
+            @error="playlist.artwork_url = ''"
+          />
+          <div v-else class="artwork-placeholder">📁</div>
+
+          <div class="track-meta">
+            <div class="track-meta-header">
+              <span class="track-label">PLAYLIST / ALBUM</span>
+              <span class="badge-playlist-count">📁 {{ playlist.tracks ? playlist.tracks.length : 0 }} nummers</span>
+            </div>
+            <h2 class="track-title">{{ playlist.title }}</h2>
+            <p class="track-artist">{{ playlist.artist }}</p>
+            <p v-if="formatPlaylistTotalDuration" class="track-duration">Totale duur: {{ formatPlaylistTotalDuration }}</p>
+          </div>
+        </div>
+
+        <!-- Selectiebalk & acties -->
+        <div class="playlist-toolbar">
+          <span class="selection-status">
+            {{ selectedTrackUrls.size }} van de {{ downloadableTracksCount }} downloadbare tracks geselecteerd
+          </span>
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm"
+            @click="toggleSelectAll"
+            :disabled="downloadingZip || downloadableTracksCount === 0"
+          >
+            {{ allSelected ? 'Deselecteer alles' : 'Alles selecteren' }}
+          </button>
+        </div>
+
+        <!-- Tracklijst -->
+        <div class="playlist-tracklist">
+          <div
+            v-for="(t, idx) in playlist.tracks"
+            :key="t.url || idx"
+            class="playlist-item"
+            :class="{ 'is-drm': t.is_drm, 'is-checked': selectedTrackUrls.has(t.url) }"
+            @click="!t.is_drm && toggleTrackSelection(t.url)"
+          >
+            <div class="playlist-item-check" @click.stop>
+              <input
+                type="checkbox"
+                :checked="selectedTrackUrls.has(t.url)"
+                :disabled="t.is_drm || downloadingZip"
+                @change="toggleTrackSelection(t.url)"
+                :title="t.is_drm ? 'DRM-beveiligd: kan niet gedownload worden' : 'Selecteren voor download'"
+                class="track-checkbox"
+              />
+            </div>
+            <span class="playlist-item-index">{{ String(idx + 1).padStart(2, '0') }}</span>
+            <div class="playlist-item-info">
+              <div class="playlist-item-title-row">
+                <span class="playlist-item-title" :title="t.title">{{ t.title }}</span>
+                <span v-if="t.is_drm" class="badge-drm" title="Dit nummer is DRM-beveiligd door SoundCloud en kan niet worden gedownload">
+                  🔒 DRM
+                </span>
+              </div>
+              <span class="playlist-item-artist">{{ t.artist }}</span>
+            </div>
+            <span class="playlist-item-duration">{{ formatDuration(t.duration_ms) }}</span>
+          </div>
+        </div>
+
+        <!-- Voortgangsbalk & status -->
+        <div v-if="zipProgressText" class="progress-block">
+          <div class="progress-header">
+            <span class="field-label">VOORTGANG</span>
+            <span class="progress-detail">{{ zipProgressText }}</span>
+          </div>
+        </div>
+
+        <!-- Download knop -->
+        <button
+          class="btn btn-accent btn-full"
+          @click="downloadPlaylistZip"
+          :disabled="selectedTrackUrls.size === 0 || downloadingZip"
+        >
+          <span v-if="downloadingZip" class="spinner"></span>
+          <span v-else>📦 Download selectie als .zip ({{ selectedTrackUrls.size }} {{ selectedTrackUrls.size === 1 ? 'track' : 'tracks' }})</span>
+        </button>
+
+        <p v-if="zipError" class="status error">❌ {{ zipError }}</p>
+        <p v-if="zipSuccess" class="status success">✅ {{ zipSuccess }}</p>
+      </section>
+    </transition>
   </div>
 </template>
 
@@ -280,6 +375,29 @@ const lastSearchedQuery = ref('')
 
 const trackUrl          = ref('')
 const track             = ref(null)
+const playlist          = ref(null)
+const selectedTrackUrls = ref(new Set())
+const downloadingZip    = ref(false)
+const zipProgressText   = ref('')
+const zipError          = ref('')
+const zipSuccess        = ref('')
+
+const downloadableTracksCount = computed(() => {
+  if (!playlist.value?.tracks) return 0
+  return playlist.value.tracks.filter(t => !t.is_drm).length
+})
+
+const allSelected = computed(() => {
+  const count = downloadableTracksCount.value
+  return count > 0 && selectedTrackUrls.value.size >= count
+})
+
+const formatPlaylistTotalDuration = computed(() => {
+  if (!playlist.value?.tracks) return ''
+  const totalMs = playlist.value.tracks.reduce((acc, t) => acc + (t.duration_ms || 0), 0)
+  return formatDuration(totalMs)
+})
+
 const selectedFormatId  = ref('')
 const loading           = ref(false)
 const fetchError        = ref('')
@@ -440,9 +558,36 @@ watch(trackUrl, () => {
   if (audioPlayerRef.value) {
     audioPlayerRef.value.reset()
   }
+  playlist.value = null
+  selectedTrackUrls.value = new Set()
+  zipError.value = ''
+  zipSuccess.value = ''
+  zipProgressText.value = ''
 })
 
-// ── Track ophalen ──
+// ── Playlist selectie beheer ──
+function toggleTrackSelection(url) {
+  if (!url) return
+  const newSet = new Set(selectedTrackUrls.value)
+  if (newSet.has(url)) {
+    newSet.delete(url)
+  } else {
+    newSet.add(url)
+  }
+  selectedTrackUrls.value = newSet
+}
+
+function toggleSelectAll() {
+  if (!playlist.value?.tracks) return
+  if (allSelected.value) {
+    selectedTrackUrls.value = new Set()
+  } else {
+    const allNonDrm = playlist.value.tracks.filter(t => !t.is_drm).map(t => t.url).filter(Boolean)
+    selectedTrackUrls.value = new Set(allNonDrm)
+  }
+}
+
+// ── Track of playlist ophalen ──
 async function fetchTrack() {
   if (!trackUrl.value.trim()) return
   if (audioPlayerRef.value) {
@@ -452,6 +597,11 @@ async function fetchTrack() {
   fetchError.value = ''
   drmInfo.value = null
   track.value = null
+  playlist.value = null
+  selectedTrackUrls.value = new Set()
+  zipError.value = ''
+  zipSuccess.value = ''
+  zipProgressText.value = ''
   selectedFormatId.value = ''
   downloadError.value = ''
   downloadSuccess.value = ''
@@ -478,14 +628,107 @@ async function fetchTrack() {
       return
     }
     const trackData = await res.json()
-    track.value = trackData
-    if (trackData.formats && trackData.formats.length > 0) {
-      selectedFormatId.value = trackData.formats[0].id
+    if (trackData.type === 'playlist') {
+      playlist.value = trackData
+      track.value = null
+      // Standaard alle niet-DRM nummers aangevinkt
+      const nonDrmUrls = (trackData.tracks || [])
+        .filter(t => !t.is_drm && t.url)
+        .map(t => t.url)
+      selectedTrackUrls.value = new Set(nonDrmUrls)
+    } else {
+      track.value = trackData
+      playlist.value = null
+      if (trackData.formats && trackData.formats.length > 0) {
+        selectedFormatId.value = trackData.formats[0].id
+      }
     }
   } catch (err) {
     fetchError.value = 'Verbindingsfout: controleer of de backend actief is op poort 8000.'
   } finally {
     loading.value = false
+  }
+}
+
+// ── Batch download als .zip ──
+async function downloadPlaylistZip() {
+  if (!playlist.value || selectedTrackUrls.value.size === 0) return
+
+  downloadingZip.value = true
+  zipError.value = ''
+  zipSuccess.value = ''
+  zipProgressText.value = 'Tracks downloaden en ZIP-archief samenstellen...'
+
+  const urlsToDownload = Array.from(selectedTrackUrls.value)
+  const safeTitle = (playlist.value.title || 'playlist').replace(/[/\\?%*:|"<>]/g, '_').trim() || 'playlist'
+  const suggestedFilename = `${safeTitle}.zip`
+
+  try {
+    const res = await fetch(`${API}/api/download-zip`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        playlist_title: playlist.value.title,
+        track_urls: urlsToDownload,
+      }),
+    })
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      zipError.value = data.detail || `Fout ${res.status}: Download van ZIP mislukt.`
+      return
+    }
+
+    zipProgressText.value = 'ZIP-archief ontvangen...'
+    const blob = await res.blob()
+
+    // Probeer native File System Access API (window.showSaveFilePicker)
+    const useFSA = typeof window.showSaveFilePicker === 'function'
+    let fileHandle = null
+
+    if (useFSA) {
+      try {
+        fileHandle = await window.showSaveFilePicker({
+          suggestedName: suggestedFilename,
+          types: [
+            {
+              description: 'ZIP-archief',
+              accept: { 'application/zip': ['.zip'] },
+            },
+          ],
+        })
+        const writable = await fileHandle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+        zipSuccess.value = `'${suggestedFilename}' is succesvol opgeslagen!`
+        zipProgressText.value = 'Voltooid!'
+        return
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          zipProgressText.value = 'Download geannuleerd.'
+          return
+        }
+        fileHandle = null
+      }
+    }
+
+    // Fallback: programmatisch <a> download element
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = suggestedFilename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    zipSuccess.value = `'${suggestedFilename}' is succesvol gedownload!`
+    zipProgressText.value = 'Download voltooid!'
+  } catch (err) {
+    zipError.value = `Onverwachte fout: ${err.message}`
+  } finally {
+    downloadingZip.value = false
   }
 }
 
@@ -1115,6 +1358,124 @@ function formatDuration(ms) {
   background: var(--accent);
   border-radius: 99px;
   transition: width .2s ease;
+}
+
+/* Playlist card & tracklist */
+.playlist-card { gap: 18px; }
+.badge-playlist-count {
+  display: inline-block;
+  background: rgba(255, 85, 0, 0.12);
+  color: var(--accent);
+  border: 1px solid rgba(255, 85, 0, 0.3);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.playlist-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #333333;
+}
+.selection-status {
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.78rem;
+}
+.playlist-tracklist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.playlist-tracklist::-webkit-scrollbar {
+  width: 6px;
+}
+.playlist-tracklist::-webkit-scrollbar-thumb {
+  background: #3e3e3e;
+  border-radius: 4px;
+}
+.playlist-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #1e1e1e;
+  border: 1px solid #303030;
+  border-radius: 7px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.playlist-item:hover:not(.is-drm) {
+  background: #282828;
+  border-color: #404040;
+}
+.playlist-item.is-checked {
+  border-color: rgba(255, 85, 0, 0.45);
+  background: rgba(255, 85, 0, 0.04);
+}
+.playlist-item.is-drm {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.playlist-item-check {
+  display: flex;
+  align-items: center;
+}
+.track-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.playlist-item-index {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--muted);
+  width: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.playlist-item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.playlist-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.playlist-item-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.playlist-item-artist {
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.playlist-item-duration {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 /* Status */
