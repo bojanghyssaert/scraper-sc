@@ -18,6 +18,7 @@ from backend.soundcloud_service import (
     search_tracks,
     stream_audio,
     embed_metadata,
+    download_tracks_as_zip,
     _cached_client_id,
 )
 
@@ -812,5 +813,137 @@ def test_get_track_info_invalid_format_id_raises():
             get_track_info("https://soundcloud.com/single/track", format_id="ogg")
 
         assert "Formaat 'ogg' is niet beschikbaar" in str(exc_info.value)
+
+
+def test_get_track_info_playlist_with_stubs():
+    """Verifieert dat een playlist correct wordt ontleed inclusief ontbrekende stub-tracks via /tracks?ids=..."""
+    mock_playlist_resp = MagicMock()
+    mock_playlist_resp.status_code = 200
+    mock_playlist_resp.json.return_value = {
+        "kind": "playlist",
+        "title": "Summer Vibes Set",
+        "user": {"username": "DJ Chill"},
+        "artwork_url": "https://i1.sndcdn.com/artworks-playlist-large.jpg",
+        "tracks": [
+            {
+                "id": 101,
+                "title": "First Full Track",
+                "user": {"username": "DJ Chill"},
+                "permalink_url": "https://soundcloud.com/dj-chill/first-track",
+                "duration": 180000,
+                "downloadable": False,
+                "media": {
+                    "transcodings": [
+                        {
+                            "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                            "url": "https://api-v2.soundcloud.com/media/prog1",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": 202,
+                # Stub track: ontbreekt title en media
+            },
+        ],
+    }
+
+    mock_tracks_batch_resp = MagicMock()
+    mock_tracks_batch_resp.status_code = 200
+    mock_tracks_batch_resp.json.return_value = [
+        {
+            "id": 202,
+            "title": "Second Resolved Track",
+            "user": {"username": "Guest Producer"},
+            "permalink_url": "https://soundcloud.com/guest/second-track",
+            "duration": 210000,
+            "downloadable": True,
+            "has_downloads_left": True,
+            "media": {
+                "transcodings": [
+                    {
+                        "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                        "url": "https://api-v2.soundcloud.com/media/prog2",
+                    }
+                ]
+            },
+        }
+    ]
+
+    with patch("backend.soundcloud_service.get_client_id", return_value="dummy_cid"), \
+         patch("backend.soundcloud_service.requests.get", side_effect=[mock_playlist_resp, mock_tracks_batch_resp]):
+
+        info = get_track_info("https://soundcloud.com/dj-chill/sets/summer-vibes")
+
+        assert info["type"] == "playlist"
+        assert info["title"] == "Summer Vibes Set"
+        assert info["artist"] == "DJ Chill"
+        assert info["artwork_url"] == "https://i1.sndcdn.com/artworks-playlist-t500x500.jpg"
+        assert len(info["tracks"]) == 2
+
+        t1 = info["tracks"][0]
+        assert t1["title"] == "First Full Track"
+        assert t1["artist"] == "DJ Chill"
+        assert t1["duration_ms"] == 180000
+        assert t1["url"] == "https://soundcloud.com/dj-chill/first-track"
+        assert t1["is_drm"] is False
+        assert t1["downloadable"] is True
+
+        t2 = info["tracks"][1]
+        assert t2["title"] == "Second Resolved Track"
+        assert t2["artist"] == "Guest Producer"
+        assert t2["url"] == "https://soundcloud.com/guest/second-track"
+        assert t2["is_drm"] is False
+        assert t2["downloadable"] is True
+
+
+def test_download_tracks_as_zip_success():
+    """Verifieert dat download_tracks_as_zip audiobestanden downloadt en bundelt in een geldig ZIP-bestand."""
+    import zipfile
+    import io
+
+    mock_track_info_1 = {
+        "title": "Track One",
+        "artist": "Artist One",
+        "filename": "Artist One - Track One.mp3",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/s1",
+        "stream_protocol": "progressive",
+    }
+    mock_track_info_2 = {
+        "title": "Track Two",
+        "artist": "Artist Two",
+        "filename": "Artist Two - Track Two.mp3",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/s2",
+        "stream_protocol": "progressive",
+    }
+
+    with patch("backend.soundcloud_service.get_track_info", side_effect=[mock_track_info_1, mock_track_info_2]), \
+         patch("backend.soundcloud_service.get_download_url", side_effect=["https://cdn.com/1.mp3", "https://cdn.com/2.mp3"]), \
+         patch("backend.soundcloud_service.stream_audio", side_effect=[iter([b"audio_one"]), iter([b"audio_two"])]), \
+         patch("backend.soundcloud_service.embed_metadata", side_effect=lambda audio, ext, info: audio):
+
+        zip_data = download_tracks_as_zip(
+            ["https://soundcloud.com/a/1", "https://soundcloud.com/a/2"],
+            client_id="dummy_cid",
+        )
+
+        assert isinstance(zip_data, bytes)
+        assert len(zip_data) > 0
+
+        # Verifieer inhoud van het ZIP-archief
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+            namelist = zf.namelist()
+            assert "Artist One - Track One.mp3" in namelist
+            assert "Artist Two - Track Two.mp3" in namelist
+            assert zf.read("Artist One - Track One.mp3") == b"audio_one"
+            assert zf.read("Artist Two - Track Two.mp3") == b"audio_two"
+
+
+def test_download_tracks_as_zip_empty():
+    """Verifieert dat een lege lijst van track_urls een SoundCloudError opwerpt."""
+    with pytest.raises(SoundCloudError, match="Geen tracks opgegeven"):
+        download_tracks_as_zip([])
 
 

@@ -7,8 +7,10 @@ track-metadata en de download-URL — zonder enige GUI-afhankelijkheid.
 
 import concurrent.futures
 import io
+import os
 import re
 import urllib.parse
+import zipfile
 from typing import Callable
 import requests
 from mutagen.id3 import ID3, TIT2, TPE1, APIC, ID3NoHeaderError
@@ -224,6 +226,91 @@ def get_track_info(
         data = resp.json()
     except ValueError as exc:
         raise SoundCloudError("Ongeldig JSON-antwoord van SoundCloud.") from exc
+
+    # Ondersteuning voor SoundCloud afspeellijsten en albums
+    if data.get("kind") in ("playlist", "system-playlist"):
+        playlist_title = data.get("title") or "Onbekende afspeellijst"
+        playlist_artist = (
+            data.get("publisher_metadata", {}).get("artist")
+            or data.get("user", {}).get("username")
+            or "Onbekende artiest"
+        )
+        playlist_artwork = data.get("artwork_url") or ""
+        if playlist_artwork:
+            playlist_artwork = playlist_artwork.replace("-large", "-t500x500")
+
+        raw_tracks = data.get("tracks", [])
+
+        # Controleer op stub tracks (SoundCloud levert na 5 nummers vaak alleen { "id": ... })
+        stub_ids = [t["id"] for t in raw_tracks if isinstance(t, dict) and t.get("id") and not t.get("title")]
+        fetched_map = {}
+        if stub_ids:
+            for i in range(0, len(stub_ids), 50):
+                batch_ids = stub_ids[i:i + 50]
+                ids_str = ",".join(str(bid) for bid in batch_ids)
+                try:
+                    b_resp, active_client_id = _fetch_with_retry(
+                        "https://api-v2.soundcloud.com/tracks",
+                        params={"ids": ids_str},
+                        client_id=active_client_id,
+                    )
+                    if b_resp.status_code == 200:
+                        for trk in b_resp.json():
+                            if isinstance(trk, dict) and trk.get("id"):
+                                fetched_map[trk["id"]] = trk
+                except Exception:
+                    pass
+
+        parsed_tracks = []
+        for t in raw_tracks:
+            if not isinstance(t, dict):
+                continue
+            item = t
+            if not item.get("title") and item.get("id") in fetched_map:
+                item = fetched_map[item["id"]]
+
+            t_title = item.get("title") or "Onbekende titel"
+            t_artist = (
+                item.get("publisher_metadata", {}).get("artist")
+                or item.get("user", {}).get("username")
+                or playlist_artist
+            )
+            t_duration = item.get("duration", 0)
+            t_permalink = item.get("permalink_url") or ""
+
+            t_downloadable = bool(item.get("downloadable")) and bool(item.get("has_downloads_left", True))
+            t_transcodings = item.get("media", {}).get("transcodings", [])
+            has_unenc = any(
+                isinstance(tc, dict)
+                and tc.get("format", {}).get("protocol") in ("progressive", "hls")
+                and "encrypted" not in tc.get("format", {}).get("protocol", "").lower()
+                for tc in t_transcodings
+            )
+            t_is_drm = (not has_unenc) and (not item.get("downloadable", False))
+            can_download = not t_is_drm
+
+            parsed_tracks.append({
+                "url": t_permalink,
+                "title": t_title,
+                "artist": t_artist,
+                "duration_ms": t_duration,
+                "downloadable": can_download,
+                "is_drm": t_is_drm,
+            })
+
+        if not playlist_artwork and raw_tracks:
+            for t in raw_tracks:
+                if isinstance(t, dict) and t.get("artwork_url"):
+                    playlist_artwork = t["artwork_url"].replace("-large", "-t500x500")
+                    break
+
+        return {
+            "type": "playlist",
+            "title": playlist_title,
+            "artist": playlist_artist,
+            "artwork_url": playlist_artwork,
+            "tracks": parsed_tracks,
+        }
 
     title = data.get("title") or "Onbekende titel"
     artist = (
@@ -443,6 +530,7 @@ def get_track_info(
     filename = filename or f"track{extension}"
 
     return {
+        "type": "track",
         "title": title,
         "artist": artist,
         "artwork_url": artwork_url,
@@ -796,4 +884,81 @@ def embed_metadata(audio_bytes: bytes, extension: str, info: dict) -> bytes:
             return audio_bytes
 
     return audio_bytes
+
+
+def download_tracks_as_zip(
+    track_urls: list[str],
+    client_id: str | None = None,
+) -> bytes:
+    """
+    Downloadt meerdere SoundCloud-tracks, voorziet ze van ID3/MP4 metadata en bundelt
+    ze in een ZIP-archief.
+
+    Returns:
+        Bytes van het gecomprimeerde ZIP-bestand.
+
+    Raises:
+        SoundCloudError: Indien er geen tracks gedownload kunnen worden.
+    """
+    if not track_urls:
+        raise SoundCloudError("Geen tracks opgegeven om te downloaden.")
+
+    active_client_id = client_id or get_cached_client_id()
+
+    def _download_one(index: int, url: str) -> tuple[int, str, bytes] | None:
+        try:
+            info = get_track_info(url, active_client_id)
+            if info.get("type") == "playlist":
+                return None
+            if info.get("direct_url"):
+                dl_url = info["direct_url"]
+            else:
+                dl_url = get_download_url(
+                    info["stream_url"],
+                    active_client_id,
+                    info.get("track_authorization"),
+                    is_direct=info.get("stream_protocol") == "direct",
+                )
+            chunks = stream_audio(dl_url)
+            raw_audio = b"".join(chunks)
+            extension = info.get("extension", ".mp3")
+            final_audio = embed_metadata(raw_audio, extension, info)
+            filename = info.get("filename") or f"track_{index + 1}{extension}"
+            return (index, filename, final_audio)
+        except Exception:
+            return None
+
+    # Parallel downloaden met maximaal 4 gelijktijdige threads
+    indexed_results: list[tuple[int, str, bytes]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(_download_one, idx, url)
+            for idx, url in enumerate(track_urls)
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res is not None:
+                indexed_results.append(res)
+
+    indexed_results.sort(key=lambda x: x[0])
+
+    if not indexed_results:
+        raise SoundCloudError("Geen van de geselecteerde tracks kon worden gedownload.")
+
+    # Schrijf alle audiobestanden naar een ZIP in het geheugen
+    zip_buffer = io.BytesIO()
+    seen_names: dict[str, int] = {}
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for _, filename, audio_bytes in indexed_results:
+            name = filename
+            if name in seen_names:
+                seen_names[name] += 1
+                base, ext = os.path.splitext(name) if "." in name else (name, ".mp3")
+                name = f"{base} ({seen_names[filename]}){ext}"
+            else:
+                seen_names[name] = 1
+
+            zf.writestr(name, audio_bytes)
+
+    return zip_buffer.getvalue()
 

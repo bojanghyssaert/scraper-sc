@@ -2,10 +2,11 @@
 FastAPI backend voor de SoundCloud Downloader webapp.
 
 Endpoints:
-    GET /api/track?url=...     — Track-metadata ophalen
-    GET /api/download?url=...  — Audiobestand streamen (MP3 of M4A)
-    GET /api/preview?url=...   — Audio preview streamen voor directe browserweergave
-    GET /api/search?q=...      — Tracks zoeken op SoundCloud
+    GET /api/track?url=...         — Track- of playlist-metadata ophalen
+    GET /api/download?url=...      — Audiobestand streamen (MP3 of M4A)
+    GET /api/preview?url=...       — Audio preview streamen voor directe browserweergave
+    GET /api/search?q=...          — Tracks zoeken op SoundCloud
+    POST /api/download-zip         — Meerdere tracks downloaden als één .zip-bestand
 """
 
 import io
@@ -13,6 +14,7 @@ import requests as req_lib
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 try:
     from backend.soundcloud_service import (
@@ -27,6 +29,7 @@ try:
         get_track_info,
         search_tracks,
         stream_audio,
+        download_tracks_as_zip,
         embed_metadata,
         HEADERS,
         TIMEOUT,
@@ -44,6 +47,7 @@ except ImportError:
         get_track_info,
         search_tracks,
         stream_audio,
+        download_tracks_as_zip,
         embed_metadata,
         HEADERS,
         TIMEOUT,
@@ -51,11 +55,11 @@ except ImportError:
 
 app = FastAPI(title="SoundCloud Downloader API", version="1.0.0")
 
-# CORS: sta de Vite-dev-server toe
+# CORS: sta de Vite-dev-server toe (inclusief POST voor zip downloads)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -124,7 +128,17 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
     except SoundCloudError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    if info.get("type") == "playlist":
+        return {
+            "type": "playlist",
+            "title": info["title"],
+            "artist": info["artist"],
+            "artwork_url": info["artwork_url"],
+            "tracks": info["tracks"],
+        }
+
     return {
+        "type": "track",
         "title": info["title"],
         "artist": info["artist"],
         "artwork_url": info["artwork_url"],
@@ -248,3 +262,40 @@ def search(
         return {"results": results}
     except SoundCloudError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+class DownloadZipRequest(BaseModel):
+    playlist_title: str = Field(..., description="Titel van de afspeellijst of het album")
+    track_urls: list[str] = Field(..., description="Lijst van SoundCloud track-URLs om te downloaden")
+
+
+@app.post("/api/download-zip")
+def download_zip(payload: DownloadZipRequest):
+    """
+    Downloadt geselecteerde tracks van een playlist, voorziet ze van metadata-tags,
+    bundelt ze in een .zip-archief en retourneert dit via StreamingResponse.
+    """
+    if not payload.track_urls:
+        raise HTTPException(status_code=400, detail="Geen tracks geselecteerd voor download.")
+
+    client_id = _get_cached_client_id()
+    try:
+        zip_bytes = download_tracks_as_zip(payload.track_urls, client_id)
+    except SoundCloudError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    safe_title = "".join(c for c in payload.playlist_title if c.isalnum() or c in " -_").strip()
+    safe_title = safe_title or "playlist"
+    filename = f"{safe_title}.zip"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(len(zip_bytes)),
+        "Cache-Control": "no-cache",
+    }
+
+    return StreamingResponse(
+        io.BytesIO(zip_bytes),
+        media_type="application/zip",
+        headers=headers,
+    )
