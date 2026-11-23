@@ -563,3 +563,159 @@ def test_embed_metadata_unsupported_or_empty_returns_original():
     corrupt_mp4 = b"not a valid mp4 file at all"
     assert embed_metadata(corrupt_mp4, ".m4a", {"title": "Corrupt"}) == corrupt_mp4
 
+
+def test_get_track_info_returns_available_formats():
+    """Verifieert dat get_track_info een lijst formats teruggeeft met MP3 en M4A opties."""
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "Dual Format Track",
+        "user": {"username": "Dual Artist"},
+        "duration": 180000,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                    "url": "https://api-v2.soundcloud.com/media/prog_mp3",
+                },
+                {
+                    "format": {"protocol": "hls", "mime_type": 'audio/mp4; codecs="mp4a.40.2"'},
+                    "url": "https://api-v2.soundcloud.com/media/hls_m4a",
+                },
+            ]
+        },
+    }
+
+    mock_stream = MagicMock()
+    mock_stream.status_code = 200
+    mock_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/prog.mp3"}
+
+    with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
+         patch("backend.soundcloud_service.requests.get", side_effect=[mock_resolve, mock_stream]):
+
+        info = get_track_info("https://soundcloud.com/dual/track")
+        assert "formats" in info
+        assert len(info["formats"]) == 2
+        format_ids = [f["id"] for f in info["formats"]]
+        assert "mp3" in format_ids
+        assert "m4a" in format_ids
+
+        # Standaard gekozen formaat is MP3
+        assert info["format_id"] == "mp3"
+        assert info["extension"] == ".mp3"
+        assert info["media_type"] == "audio/mpeg"
+
+
+def test_get_track_info_select_m4a_format():
+    """Verifieert dat bij format_id='m4a' het M4A-formaat wordt geselecteerd."""
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "Select M4A Track",
+        "user": {"username": "Select Artist"},
+        "duration": 120000,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                    "url": "https://api-v2.soundcloud.com/media/prog_mp3",
+                },
+                {
+                    "format": {"protocol": "hls", "mime_type": "audio/mp4"},
+                    "url": "https://api-v2.soundcloud.com/media/hls_m4a",
+                },
+            ]
+        },
+    }
+
+    mock_stream = MagicMock()
+    mock_stream.status_code = 200
+    mock_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/prog.mp3"}
+
+    with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
+         patch("backend.soundcloud_service.requests.get", side_effect=[mock_resolve, mock_stream]):
+
+        info = get_track_info("https://soundcloud.com/select/track", format_id="m4a")
+        assert info["format_id"] == "m4a"
+        assert info["extension"] == ".m4a"
+        assert info["media_type"] == "audio/mp4"
+        assert info["stream_url"] == "https://api-v2.soundcloud.com/media/hls_m4a"
+        assert info["filename"].endswith(".m4a")
+
+
+def test_get_track_info_official_download_with_formats():
+    """Verifieert dat bij een downloadable track zowel 'original' als streams in formats zitten."""
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "Multi Option DL",
+        "user": {"username": "Pro Artist"},
+        "id": 8888,
+        "downloadable": True,
+        "has_downloads_left": True,
+        "original_format": "wav",
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                    "url": "https://api-v2.soundcloud.com/media/prog_mp3",
+                }
+            ]
+        },
+    }
+
+    mock_dl_api = MagicMock()
+    mock_dl_api.status_code = 200
+    mock_dl_api.json.return_value = {"redirectUri": "https://sndcdn.com/download/file.wav"}
+
+    mock_stream = MagicMock()
+    mock_stream.status_code = 200
+    mock_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/prog.mp3"}
+
+    with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
+         patch("backend.soundcloud_service.requests.get", side_effect=[mock_resolve, mock_dl_api, mock_stream]):
+
+        # Zonder format_id is original de standaard
+        info = get_track_info("https://soundcloud.com/pro/dl")
+        assert info["format_id"] == "original"
+        assert info["extension"] == ".wav"
+        assert info["is_artist_download"] is True
+
+        format_ids = [f["id"] for f in info["formats"]]
+        assert "original" in format_ids
+        assert "mp3" in format_ids
+        orig_fmt = next(f for f in info["formats"] if f["id"] == "original")
+        assert orig_fmt["label"] == "Origineel bestand (WAV)"
+
+
+def test_get_track_info_invalid_format_id_raises():
+    """Verifieert dat een niet-beschikbaar format_id een SoundCloudError oplevert."""
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "Single Format",
+        "user": {"username": "Artist"},
+        "duration": 60000,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                    "url": "https://api-v2.soundcloud.com/media/prog_mp3",
+                }
+            ]
+        },
+    }
+
+    mock_stream = MagicMock()
+    mock_stream.status_code = 200
+    mock_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/prog.mp3"}
+
+    with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
+         patch("backend.soundcloud_service.requests.get", side_effect=[mock_resolve, mock_stream]):
+
+        with pytest.raises(SoundCloudError) as exc_info:
+            get_track_info("https://soundcloud.com/single/track", format_id="ogg")
+
+        assert "Formaat 'ogg' is niet beschikbaar" in str(exc_info.value)
+
+
