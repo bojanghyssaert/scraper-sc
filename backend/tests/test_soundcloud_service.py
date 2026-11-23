@@ -267,6 +267,43 @@ def test_search_tracks_drm_detection_and_fields():
         assert results[2]["is_drm"] is False
 
 
+def test_search_tracks_null_publisher_metadata_and_user():
+    """Verifieert dat search_tracks niet crasht wanneer publisher_metadata of user None/null is in de response."""
+    mock_200 = MagicMock()
+    mock_200.status_code = 200
+    mock_200.json.return_value = {
+        "collection": [
+            {
+                "id": 999,
+                "title": "Null Metadata Track",
+                "publisher_metadata": None,
+                "user": None,
+                "artwork_url": None,
+                "duration": 210000,
+                "permalink_url": "https://soundcloud.com/test/null-track",
+                "downloadable": False,
+                "media": None,
+            },
+            {
+                "id": 1000,
+                "title": "Null Transcodings Track",
+                "publisher_metadata": None,
+                "user": {"username": "Fallback User"},
+                "media": {"transcodings": None},
+            },
+        ]
+    }
+
+    with patch("backend.soundcloud_service.requests.get", return_value=mock_200):
+        results = search_tracks("null query", client_id="test_cid", limit=8)
+        assert len(results) == 2
+        assert results[0]["title"] == "Null Metadata Track"
+        assert results[0]["artist"] == "Onbekende artiest"
+        assert results[0]["is_drm"] is True
+        assert results[1]["title"] == "Null Transcodings Track"
+        assert results[1]["artist"] == "Fallback User"
+
+
 def test_search_tracks_empty_query():
     """Verifieert dat een lege zoekopdracht direct een lege lijst teruggeeft zonder netwerkverzoek."""
     assert search_tracks("", client_id="cid") == []
@@ -895,6 +932,34 @@ def test_get_track_info_playlist_with_stubs():
         assert t2["url"] == "https://soundcloud.com/guest/second-track"
         assert t2["is_drm"] is False
         assert t2["downloadable"] is True
+
+
+def test_get_track_info_null_publisher_metadata_and_user():
+    """Verifieert dat get_track_info niet crasht wanneer publisher_metadata of user None/null is in de response."""
+    mock_200 = MagicMock()
+    mock_200.status_code = 200
+    mock_200.json.return_value = {
+        "id": 888,
+        "title": "Track With Nulls",
+        "publisher_metadata": None,
+        "user": None,
+        "artwork_url": None,
+        "duration": 180000,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                    "url": "https://api-v2.soundcloud.com/media/stream_prog",
+                }
+            ]
+        },
+    }
+
+    with patch("backend.soundcloud_service._fetch_with_retry", return_value=(mock_200, "cid_123")):
+        info = get_track_info("https://soundcloud.com/test/null-track", client_id="cid_123")
+        assert info["title"] == "Track With Nulls"
+        assert info["artist"] == "Onbekende artiest"
+        assert info["filename"] == "Onbekende artiest - Track With Nulls.mp3"
 
 
 def test_download_tracks_as_zip_success():
