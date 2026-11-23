@@ -187,6 +187,101 @@ def test_search_tracks_auto_refresh_on_401():
         assert results[0]["title"] == "Track One"
 
 
+def test_search_tracks_drm_detection_and_fields():
+    """Verifieert dat search_tracks metadata formatteert en DRM-status correct berekent."""
+    mock_200 = MagicMock()
+    mock_200.status_code = 200
+    mock_200.json.return_value = {
+        "collection": [
+            {
+                "id": 101,
+                "title": "Unencrypted Track",
+                "user": {"username": "Artist One"},
+                "artwork_url": "https://i1.sndcdn.com/artworks-large.jpg",
+                "duration": 180000,
+                "permalink_url": "https://soundcloud.com/artist-one/unencrypted",
+                "downloadable": False,
+                "media": {
+                    "transcodings": [
+                        {
+                            "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                            "url": "https://api-v2.soundcloud.com/media/prog",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": 102,
+                "title": "DRM Track",
+                "user": {"username": "Artist Two"},
+                "artwork_url": "https://i1.sndcdn.com/artworks-drm-large.jpg",
+                "duration": 240000,
+                "permalink_url": "https://soundcloud.com/artist-two/drm-track",
+                "downloadable": False,
+                "media": {
+                    "transcodings": [
+                        {
+                            "format": {"protocol": "hls/encrypted", "mime_type": "audio/mpegurl"},
+                            "url": "https://api-v2.soundcloud.com/media/enc",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": 103,
+                "title": "Artist Download Track",
+                "publisher_metadata": {"artist": "Special Artist"},
+                "artwork_url": None,
+                "duration": 120000,
+                "permalink_url": "https://soundcloud.com/special-artist/downloadable",
+                "downloadable": True,
+                "has_downloads_left": True,
+                "media": {"transcodings": []},
+            },
+        ]
+    }
+
+    with patch("backend.soundcloud_service.requests.get", return_value=mock_200):
+        results = search_tracks("test query", client_id="test_cid", limit=8)
+
+        assert len(results) == 3
+
+        # Track 1: onbeveiligde stream -> is_drm = False
+        assert results[0]["title"] == "Unencrypted Track"
+        assert results[0]["artist"] == "Artist One"
+        assert results[0]["artwork_url"] == "https://i1.sndcdn.com/artworks-t500x500.jpg"
+        assert results[0]["duration_ms"] == 180000
+        assert results[0]["permalink_url"] == "https://soundcloud.com/artist-one/unencrypted"
+        assert results[0]["is_drm"] is False
+
+        # Track 2: alleen encrypted stream, geen download -> is_drm = True
+        assert results[1]["title"] == "DRM Track"
+        assert results[1]["artist"] == "Artist Two"
+        assert results[1]["is_drm"] is True
+
+        # Track 3: officiële artist download aanwezig -> is_drm = False
+        assert results[2]["title"] == "Artist Download Track"
+        assert results[2]["artist"] == "Special Artist"
+        assert results[2]["artwork_url"] == ""
+        assert results[2]["is_drm"] is False
+
+
+def test_search_tracks_empty_query():
+    """Verifieert dat een lege zoekopdracht direct een lege lijst teruggeeft zonder netwerkverzoek."""
+    assert search_tracks("", client_id="cid") == []
+    assert search_tracks("   ", client_id="cid") == []
+
+
+def test_search_tracks_api_error():
+    """Verifieert dat search_tracks een SoundCloudError opwerpt bij een HTTP-foutcode of ongeldig JSON."""
+    mock_500 = MagicMock()
+    mock_500.status_code = 500
+
+    with patch("backend.soundcloud_service.requests.get", return_value=mock_500):
+        with pytest.raises(SoundCloudError, match="SoundCloud zoek-API gaf foutcode 500 terug"):
+            search_tracks("fail", client_id="cid")
+
+
 def test_get_track_info_hls_stream_parsing():
     """Verifieert dat een HLS-stream correct wordt geselecteerd wanneer er geen progressive is."""
     mock_resolve = MagicMock()

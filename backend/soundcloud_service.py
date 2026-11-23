@@ -523,14 +523,20 @@ def get_download_url(
 def search_tracks(
     query: str,
     client_id: str | None = None,
-    limit: int = 10,
+    limit: int = 8,
 ) -> list[dict]:
     """
     Zoekt tracks op SoundCloud via de /search/tracks API.
     Ververst automatisch de client_id als SoundCloud een HTTP 401 of 403 teruggeeft.
 
     Returns:
-        Lijst met track dictionaries.
+        Lijst met dictionaries bevattende:
+        - title (str)
+        - artist (str)
+        - artwork_url (str)
+        - duration_ms (int)
+        - permalink_url (str)
+        - is_drm (bool)
 
     Raises:
         SoundCloudError: Bij netwerk- of API-fouten.
@@ -554,9 +560,46 @@ def search_tracks(
 
     try:
         data = resp.json()
-        return data.get("collection", [])
     except ValueError as exc:
         raise SoundCloudError("Ongeldig JSON-antwoord van SoundCloud zoek-API.") from exc
+
+    results: list[dict] = []
+    for item in data.get("collection", []):
+        if not isinstance(item, dict):
+            continue
+
+        title = item.get("title") or "Onbekende titel"
+        artist = (
+            item.get("publisher_metadata", {}).get("artist")
+            or item.get("user", {}).get("username")
+            or "Onbekende artiest"
+        )
+        artwork_url = item.get("artwork_url") or ""
+        if artwork_url:
+            artwork_url = artwork_url.replace("-large", "-t500x500")
+        duration_ms = item.get("duration", 0)
+        permalink_url = item.get("permalink_url") or ""
+
+        downloadable = bool(item.get("downloadable")) and bool(item.get("has_downloads_left", True))
+        transcodings = item.get("media", {}).get("transcodings", [])
+        has_unencrypted_stream = any(
+            isinstance(t, dict)
+            and t.get("format", {}).get("protocol") in ("progressive", "hls")
+            and "encrypted" not in t.get("format", {}).get("protocol", "").lower()
+            for t in transcodings
+        )
+        is_drm = (not has_unencrypted_stream) and (not downloadable)
+
+        results.append({
+            "title": title,
+            "artist": artist,
+            "artwork_url": artwork_url,
+            "duration_ms": duration_ms,
+            "permalink_url": permalink_url,
+            "is_drm": is_drm,
+        })
+
+    return results
 
 
 # Alias voor brede compatibiliteit

@@ -189,18 +189,48 @@ def test_api_download_invalid_format_id(client):
 
 
 def test_api_search_success(client):
-    """Verifieert dat /api/search zoekresultaten retourneert."""
-    mock_results = [{"id": 1, "title": "Result One"}, {"id": 2, "title": "Result Two"}]
+    """Verifieert dat /api/search zoekresultaten retourneert met juiste velden."""
+    mock_results = [
+        {
+            "title": "Search Track 1",
+            "artist": "Search Artist 1",
+            "artwork_url": "https://i1.sndcdn.com/artworks-1-t500x500.jpg",
+            "duration_ms": 180000,
+            "permalink_url": "https://soundcloud.com/artist/track-1",
+            "is_drm": False,
+        },
+        {
+            "title": "Search Track 2 (DRM)",
+            "artist": "Search Artist 2",
+            "artwork_url": "https://i1.sndcdn.com/artworks-2-t500x500.jpg",
+            "duration_ms": 210000,
+            "permalink_url": "https://soundcloud.com/artist/track-2",
+            "is_drm": True,
+        },
+    ]
 
     with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
-         patch("backend.main.search_tracks", return_value=mock_results):
+         patch("backend.main.search_tracks", return_value=mock_results) as mock_search:
 
-        response = client.get("/api/search?q=ambient")
+        response = client.get("/api/search?q=ambient&limit=5")
         assert response.status_code == 200
+        mock_search.assert_called_once_with("ambient", "dummy_id", limit=5)
         data = response.json()
         assert "results" in data
         assert len(data["results"]) == 2
-        assert data["results"][0]["title"] == "Result One"
+        assert data["results"][0]["title"] == "Search Track 1"
+        assert data["results"][0]["is_drm"] is False
+        assert data["results"][1]["is_drm"] is True
+
+
+def test_api_search_error(client):
+    """Verifieert dat /api/search HTTP 400 retourneert als SoundCloudError optreedt."""
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.search_tracks", side_effect=SoundCloudError("Fout bij zoeken op SoundCloud")):
+
+        response = client.get("/api/search?q=faulty")
+        assert response.status_code == 400
+        assert "Fout bij zoeken op SoundCloud" in response.json()["detail"]
 
 
 def test_api_preview_success(client):
