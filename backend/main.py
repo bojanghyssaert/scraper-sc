@@ -3,7 +3,7 @@ FastAPI backend voor de SoundCloud Downloader webapp.
 
 Endpoints:
     GET /api/track?url=...     — Track-metadata ophalen
-    GET /api/download?url=...  — MP3-bestand streamen
+    GET /api/download?url=...  — Audiobestand streamen (MP3 of M4A)
 """
 
 import requests as req_lib

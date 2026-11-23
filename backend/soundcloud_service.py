@@ -108,59 +108,91 @@ def get_track_info(track_url: str, client_id: str) -> dict:
 
     duration_ms = data.get("duration", 0)
 
-    # Zoek naar onbeveiligde streams in volgorde van voorkeur (encrypted-hls wordt overgeslagen):
-    # 1. progressive met audio/mpeg (.mp3, audio/mpeg)
-    # 2. hls met audio/mpeg (.mp3, audio/mpeg)
-    # 3. hls met audio/ogg (.ogg, audio/ogg)
+    # Zoek naar onbeveiligde streams in volgorde van voorkeur (encrypted wordt overgeslagen):
+    # 1. progressive met "mpeg" in mime_type (.mp3, audio/mpeg)
+    # 2. hls met ("mpegurl" in mime_type of "mpeg" in mime_type) (.mp3, audio/mpeg)
+    # 3. hls met "mp4" in mime_type (.m4a, audio/mp4)
     transcodings = data.get("media", {}).get("transcodings", [])
-    stream_url = None
-    stream_protocol = None
-    media_type = None
-    extension = None
+    track_authorization = data.get("track_authorization")
 
-    # 1. Progressive met audio/mpeg
+    candidates = []
+
+    # 1. Progressive met "mpeg" in mime_type
     for transcoding in transcodings:
         fmt = transcoding.get("format", {})
         protocol = fmt.get("protocol", "")
         mime = fmt.get("mime_type", "")
         if "encrypted" in protocol.lower():
             continue
-        if protocol == "progressive" and (mime == "audio/mpeg" or (mime.startswith("audio/mpeg") and "mpegurl" not in mime)):
-            stream_url = transcoding.get("url")
-            stream_protocol = "progressive"
-            media_type = "audio/mpeg"
-            extension = ".mp3"
+        if protocol == "progressive" and "mpeg" in mime:
+            candidates.append({
+                "stream_url": transcoding.get("url"),
+                "stream_protocol": "progressive",
+                "media_type": "audio/mpeg",
+                "extension": ".mp3",
+            })
             break
 
-    # 2. HLS met audio/mpeg
-    if not stream_url:
-        for transcoding in transcodings:
-            fmt = transcoding.get("format", {})
-            protocol = fmt.get("protocol", "")
-            mime = fmt.get("mime_type", "")
-            if "encrypted" in protocol.lower():
-                continue
-            if protocol == "hls" and (mime == "audio/mpeg" or (mime.startswith("audio/mpeg") and "mpegurl" not in mime)):
-                stream_url = transcoding.get("url")
-                stream_protocol = "hls"
-                media_type = "audio/mpeg"
-                extension = ".mp3"
-                break
+    # 2. HLS met "mpegurl" of "mpeg" in mime_type
+    for transcoding in transcodings:
+        fmt = transcoding.get("format", {})
+        protocol = fmt.get("protocol", "")
+        mime = fmt.get("mime_type", "")
+        if "encrypted" in protocol.lower():
+            continue
+        if protocol == "hls" and ("mpegurl" in mime or "mpeg" in mime):
+            candidates.append({
+                "stream_url": transcoding.get("url"),
+                "stream_protocol": "hls",
+                "media_type": "audio/mpeg",
+                "extension": ".mp3",
+            })
+            break
 
-    # 3. HLS met audio/ogg
-    if not stream_url:
-        for transcoding in transcodings:
-            fmt = transcoding.get("format", {})
-            protocol = fmt.get("protocol", "")
-            mime = fmt.get("mime_type", "")
-            if "encrypted" in protocol.lower():
-                continue
-            if protocol == "hls" and "audio/ogg" in mime:
-                stream_url = transcoding.get("url")
-                stream_protocol = "hls"
-                media_type = "audio/ogg"
-                extension = ".ogg"
+    # 3. HLS met "mp4" in mime_type
+    for transcoding in transcodings:
+        fmt = transcoding.get("format", {})
+        protocol = fmt.get("protocol", "")
+        mime = fmt.get("mime_type", "")
+        if "encrypted" in protocol.lower():
+            continue
+        if protocol == "hls" and "mp4" in mime:
+            candidates.append({
+                "stream_url": transcoding.get("url"),
+                "stream_protocol": "hls",
+                "media_type": "audio/mp4",
+                "extension": ".m4a",
+            })
+            break
+
+    stream_url = None
+    stream_protocol = None
+    media_type = None
+    extension = None
+
+    # Valideer kandidaten in prioriteitsvolgorde; sla streams over die 404 geven bij SoundCloud
+    for cand in candidates:
+        try:
+            params = {"client_id": client_id}
+            if track_authorization:
+                params["track_authorization"] = track_authorization
+            chk = requests.get(cand["stream_url"], params=params, headers=HEADERS, timeout=TIMEOUT)
+            if chk.status_code == 200 and chk.json().get("url"):
+                stream_url = cand["stream_url"]
+                stream_protocol = cand["stream_protocol"]
+                media_type = cand["media_type"]
+                extension = cand["extension"]
                 break
+        except Exception:
+            continue
+
+    # Fallback op eerste kandidaat als alle validatiechecks faalden (bijv. bij tijdelijke netwerkfout)
+    if not stream_url and candidates:
+        first = candidates[0]
+        stream_url = first["stream_url"]
+        stream_protocol = first["stream_protocol"]
+        media_type = first["media_type"]
+        extension = first["extension"]
 
     if not stream_url:
         # Lijst van beschikbare formaten printen naar de terminal
@@ -181,7 +213,7 @@ def get_track_info(track_url: str, client_id: str) -> dict:
         else:
             formats_str = ", ".join(format_list) if format_list else "geen formaten gevonden"
             raise SoundCloudError(
-                f"Geen ondersteunde onbeveiligde MP3- of Opus-stream gevonden voor '{title}'. Beschikbare formaten: {formats_str}."
+                f"Geen ondersteunde onbeveiligde MP3- of M4A-stream gevonden voor '{title}'. Beschikbare formaten: {formats_str}."
             )
 
     # Veilige bestandsnaam met juiste extensie
@@ -263,6 +295,10 @@ def stream_audio(download_url: str):
 
         lines = [line.strip() for line in playlist_text.splitlines() if line.strip()]
 
+        # Controleer op #EXT-X-MAP:URI="..." (het MP4/M4A initialisatiesegment)
+        map_match = re.search(r'#EXT-X-MAP:[^\r\n]*URI="([^"]+)"', playlist_text)
+        init_url = urllib.parse.urljoin(download_url, map_match.group(1)) if map_match else None
+
         # Filter alle regels die niet met '#' beginnen (segment URLs)
         segment_urls = [
             urllib.parse.urljoin(download_url, line)
@@ -272,6 +308,21 @@ def stream_audio(download_url: str):
 
         if not segment_urls:
             raise SoundCloudError("Geen segmenten gevonden in HLS playlist.")
+
+        # Stream eerst het initialisatiesegment indien aanwezig (vereist voor fMP4 / M4A)
+        if init_url:
+            try:
+                with requests.get(init_url, headers=HEADERS, stream=True, timeout=TIMEOUT) as init_resp:
+                    if init_resp.status_code == 200:
+                        for chunk in init_resp.iter_content(chunk_size=1024 * 64):
+                            if chunk:
+                                yield chunk
+                    else:
+                        raise SoundCloudError(
+                            f"Fout bij downloaden van HLS init-segment: HTTP {init_resp.status_code}"
+                        )
+            except requests.RequestException as exc:
+                raise SoundCloudError(f"Netwerkfout tijdens streamen van init-segment: {exc}") from exc
 
         # Stream elk segment achter elkaar door in chunks
         for seg_url in segment_urls:
