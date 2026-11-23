@@ -288,15 +288,19 @@ def download_track(
 
 
 @app.get("/api/preview")
-def preview_track(url: str = Query(..., description="Publieke SoundCloud track-URL")):
+def preview_track(
+    url: str = Query(..., description="Publieke SoundCloud track-URL"),
+    format_id: str | None = Query(None, description="Optioneel formaat-ID (bijv. 'mp3', 'm4a')"),
+):
     """
     Streamt het audiobestand zonder Content-Disposition: attachment header
     voor directe weergave in een HTML5 <audio>-element.
+    Gebruikt het gespecificeerde format_id of het eerst beschikbare werkende formaat.
     """
     client_id = _get_cached_client_id()
 
     try:
-        info = get_track_info(url, client_id)
+        info = get_track_info(url, client_id, format_id=format_id)
         if info.get("direct_url"):
             download_url = info["direct_url"]
         else:

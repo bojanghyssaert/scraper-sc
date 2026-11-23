@@ -411,7 +411,11 @@ const audioPlayerRef    = ref(null)
 
 const previewAudioUrl = computed(() => {
   if (!track.value || !trackUrl.value.trim()) return ''
-  return `${API}/api/preview?url=${encodeURIComponent(trackUrl.value.trim())}`
+  let url = `${API}/api/preview?url=${encodeURIComponent(trackUrl.value.trim())}`
+  if (selectedFormatId.value) {
+    url += `&format_id=${encodeURIComponent(selectedFormatId.value)}`
+  }
+  return url
 })
 
 // Bepaal het huidig actieve formaatobject
