@@ -23,6 +23,10 @@ class SoundCloudError(Exception):
     """Domein-specifieke fout voor SoundCloud-bewerkingen."""
 
 
+class SoundCloudDRMError(SoundCloudError):
+    """Domein-specifieke fout voor DRM-beveiligde SoundCloud tracks."""
+
+
 def get_client_id() -> str:
     """
     Haalt dynamisch de actieve client_id op uit de SoundCloud-frontend JS.
@@ -107,92 +111,144 @@ def get_track_info(track_url: str, client_id: str) -> dict:
         artwork_url = artwork_url.replace("-large", "-t500x500")
 
     duration_ms = data.get("duration", 0)
+    track_id = data.get("id")
 
-    # Zoek naar onbeveiligde streams in volgorde van voorkeur (encrypted wordt overgeslagen):
-    # 1. progressive met "mpeg" in mime_type (.mp3, audio/mpeg)
-    # 2. hls met ("mpegurl" in mime_type of "mpeg" in mime_type) (.mp3, audio/mpeg)
-    # 3. hls met "mp4" in mime_type (.m4a, audio/mp4)
+    # 1. Controleer op officiële artist-downloads
+    downloadable = bool(data.get("downloadable"))
+    has_downloads_left = bool(data.get("has_downloads_left"))
+
+    direct_url = None
+    if downloadable and has_downloads_left and track_id:
+        dl_api_url = (
+            f"https://api-v2.soundcloud.com/tracks/{track_id}/download"
+            f"?client_id={client_id}"
+        )
+        try:
+            dl_resp = requests.get(dl_api_url, headers=HEADERS, timeout=TIMEOUT)
+            if dl_resp.status_code == 200:
+                direct_url = dl_resp.json().get("redirectUri")
+        except requests.RequestException:
+            direct_url = None
+
     transcodings = data.get("media", {}).get("transcodings", [])
     track_authorization = data.get("track_authorization")
-
-    candidates = []
-
-    # 1. Progressive met "mpeg" in mime_type
-    for transcoding in transcodings:
-        fmt = transcoding.get("format", {})
-        protocol = fmt.get("protocol", "")
-        mime = fmt.get("mime_type", "")
-        if "encrypted" in protocol.lower():
-            continue
-        if protocol == "progressive" and "mpeg" in mime:
-            candidates.append({
-                "stream_url": transcoding.get("url"),
-                "stream_protocol": "progressive",
-                "media_type": "audio/mpeg",
-                "extension": ".mp3",
-            })
-            break
-
-    # 2. HLS met "mpegurl" of "mpeg" in mime_type
-    for transcoding in transcodings:
-        fmt = transcoding.get("format", {})
-        protocol = fmt.get("protocol", "")
-        mime = fmt.get("mime_type", "")
-        if "encrypted" in protocol.lower():
-            continue
-        if protocol == "hls" and ("mpegurl" in mime or "mpeg" in mime):
-            candidates.append({
-                "stream_url": transcoding.get("url"),
-                "stream_protocol": "hls",
-                "media_type": "audio/mpeg",
-                "extension": ".mp3",
-            })
-            break
-
-    # 3. HLS met "mp4" in mime_type
-    for transcoding in transcodings:
-        fmt = transcoding.get("format", {})
-        protocol = fmt.get("protocol", "")
-        mime = fmt.get("mime_type", "")
-        if "encrypted" in protocol.lower():
-            continue
-        if protocol == "hls" and "mp4" in mime:
-            candidates.append({
-                "stream_url": transcoding.get("url"),
-                "stream_protocol": "hls",
-                "media_type": "audio/mp4",
-                "extension": ".m4a",
-            })
-            break
 
     stream_url = None
     stream_protocol = None
     media_type = None
     extension = None
 
-    # Valideer kandidaten in prioriteitsvolgorde; sla streams over die 404 geven bij SoundCloud
-    for cand in candidates:
-        try:
-            params = {"client_id": client_id}
-            if track_authorization:
-                params["track_authorization"] = track_authorization
-            chk = requests.get(cand["stream_url"], params=params, headers=HEADERS, timeout=TIMEOUT)
-            if chk.status_code == 200 and chk.json().get("url"):
-                stream_url = cand["stream_url"]
-                stream_protocol = cand["stream_protocol"]
-                media_type = cand["media_type"]
-                extension = cand["extension"]
-                break
-        except Exception:
-            continue
+    if direct_url:
+        stream_url = direct_url
+        stream_protocol = "direct"
 
-    # Fallback op eerste kandidaat als alle validatiechecks faalden (bijv. bij tijdelijke netwerkfout)
-    if not stream_url and candidates:
-        first = candidates[0]
-        stream_url = first["stream_url"]
-        stream_protocol = first["stream_protocol"]
-        media_type = first["media_type"]
-        extension = first["extension"]
+        # Bepaal extensie en MIME-type voor de officiële download
+        orig_format = data.get("original_format")
+        if orig_format:
+            extension = f".{orig_format.lstrip('.').lower()}"
+        else:
+            clean_direct_url = direct_url.split("?")[0].lower()
+            if clean_direct_url.endswith(".flac"):
+                extension = ".flac"
+            elif clean_direct_url.endswith(".wav"):
+                extension = ".wav"
+            elif clean_direct_url.endswith(".aif") or clean_direct_url.endswith(".aiff"):
+                extension = ".aiff"
+            elif clean_direct_url.endswith(".m4a"):
+                extension = ".m4a"
+            elif clean_direct_url.endswith(".ogg"):
+                extension = ".ogg"
+            else:
+                extension = ".mp3"
+
+        mime_map = {
+            ".mp3": "audio/mpeg",
+            ".wav": "audio/wav",
+            ".flac": "audio/flac",
+            ".aiff": "audio/aiff",
+            ".aif": "audio/aiff",
+            ".m4a": "audio/mp4",
+            ".ogg": "audio/ogg",
+        }
+        media_type = mime_map.get(extension, "audio/mpeg")
+    else:
+        # Zoek naar onbeveiligde streams in volgorde van voorkeur (encrypted wordt overgeslagen):
+        # 1. progressive met "mpeg" in mime_type (.mp3, audio/mpeg)
+        # 2. hls met ("mpegurl" in mime_type of "mpeg" in mime_type) (.mp3, audio/mpeg)
+        # 3. hls met "mp4" in mime_type (.m4a, audio/mp4)
+        candidates = []
+
+        # 1. Progressive met "mpeg" in mime_type
+        for transcoding in transcodings:
+            fmt = transcoding.get("format", {})
+            protocol = fmt.get("protocol", "")
+            mime = fmt.get("mime_type", "")
+            if "encrypted" in protocol.lower():
+                continue
+            if protocol == "progressive" and "mpeg" in mime:
+                candidates.append({
+                    "stream_url": transcoding.get("url"),
+                    "stream_protocol": "progressive",
+                    "media_type": "audio/mpeg",
+                    "extension": ".mp3",
+                })
+                break
+
+        # 2. HLS met "mpegurl" of "mpeg" in mime_type
+        for transcoding in transcodings:
+            fmt = transcoding.get("format", {})
+            protocol = fmt.get("protocol", "")
+            mime = fmt.get("mime_type", "")
+            if "encrypted" in protocol.lower():
+                continue
+            if protocol == "hls" and ("mpegurl" in mime or "mpeg" in mime):
+                candidates.append({
+                    "stream_url": transcoding.get("url"),
+                    "stream_protocol": "hls",
+                    "media_type": "audio/mpeg",
+                    "extension": ".mp3",
+                })
+                break
+
+        # 3. HLS met "mp4" in mime_type
+        for transcoding in transcodings:
+            fmt = transcoding.get("format", {})
+            protocol = fmt.get("protocol", "")
+            mime = fmt.get("mime_type", "")
+            if "encrypted" in protocol.lower():
+                continue
+            if protocol == "hls" and "mp4" in mime:
+                candidates.append({
+                    "stream_url": transcoding.get("url"),
+                    "stream_protocol": "hls",
+                    "media_type": "audio/mp4",
+                    "extension": ".m4a",
+                })
+                break
+
+        # Valideer kandidaten in prioriteitsvolgorde; sla streams over die 404 geven bij SoundCloud
+        for cand in candidates:
+            try:
+                params = {"client_id": client_id}
+                if track_authorization:
+                    params["track_authorization"] = track_authorization
+                chk = requests.get(cand["stream_url"], params=params, headers=HEADERS, timeout=TIMEOUT)
+                if chk.status_code == 200 and chk.json().get("url"):
+                    stream_url = cand["stream_url"]
+                    stream_protocol = cand["stream_protocol"]
+                    media_type = cand["media_type"]
+                    extension = cand["extension"]
+                    break
+            except Exception:
+                continue
+
+        # Fallback op eerste kandidaat als alle validatiechecks faalden (bijv. bij tijdelijke netwerkfout)
+        if not stream_url and candidates:
+            first = candidates[0]
+            stream_url = first["stream_url"]
+            stream_protocol = first["stream_protocol"]
+            media_type = first["media_type"]
+            extension = first["extension"]
 
     if not stream_url:
         # Lijst van beschikbare formaten printen naar de terminal
@@ -204,11 +260,15 @@ def get_track_info(track_url: str, client_id: str) -> dict:
 
         # Controleer of er alleen encrypted-hls aanwezig is
         has_encrypted = any("encrypted" in t.get("format", {}).get("protocol", "").lower() for t in transcodings)
-        only_encrypted = bool(transcodings) and all("encrypted" in t.get("format", {}).get("protocol", "").lower() for t in transcodings)
+        has_unencrypted = any(
+            t.get("format", {}).get("protocol") in ("progressive", "hls")
+            and "encrypted" not in t.get("format", {}).get("protocol", "").lower()
+            for t in transcodings
+        )
 
-        if only_encrypted or (has_encrypted and not any(t.get("format", {}).get("protocol") in ("progressive", "hls") for t in transcodings)):
-            raise SoundCloudError(
-                f"Deze track ('{title}') is DRM-beveiligd (alleen encrypted-hls beschikbaar) en kan niet worden gedownload."
+        if (has_encrypted and not has_unencrypted) or (not transcodings and not downloadable):
+            raise SoundCloudDRMError(
+                f"Dit nummer ('{title}') is DRM-beveiligd door SoundCloud en kan niet worden gedownload."
             )
         else:
             formats_str = ", ".join(format_list) if format_list else "geen formaten gevonden"
@@ -235,23 +295,31 @@ def get_track_info(track_url: str, client_id: str) -> dict:
         "stream_url": stream_url,
         "stream_protocol": stream_protocol,
         "track_authorization": track_authorization,
+        "direct_url": direct_url,
+        "is_artist_download": bool(direct_url),
     }
 
 
 def get_download_url(
     stream_url: str,
     client_id: str,
-    track_authorization: str | None = None
+    track_authorization: str | None = None,
+    is_direct: bool = False,
 ) -> str:
     """
     Wisselt de stream-URL in voor de directe CDN-downloadlink.
+    Als stream_url al een directe download-URL is (bijv. van een officiële artist download),
+    wordt deze direct geretourneerd.
 
     Returns:
-        De CDN-URL van het MP3-bestand of HLS m3u8 playlist.
+        De CDN-URL van het audiobestand of HLS m3u8 playlist.
 
     Raises:
         SoundCloudError: Bij netwerk- of API-fouten.
     """
+    if is_direct or not stream_url.startswith("https://api-v2.soundcloud.com/media/"):
+        return stream_url
+
     params = {"client_id": client_id}
     if track_authorization:
         params["track_authorization"] = track_authorization
