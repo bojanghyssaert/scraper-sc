@@ -422,7 +422,7 @@ def get_track_info(
             "is_artist_download": True,
         })
 
-    # 2. Controleer op onbeveiligde MP3-streams (progressive voorkeur, anders HLS)
+    # 2. Bepaal kandidaat-transcodings voor MP3 en M4A
     prog_mp3 = next(
         (
             t for t in transcodings
@@ -446,37 +446,65 @@ def get_track_info(
         ),
         None,
     )
+    prog_m4a = next(
+        (
+            t for t in transcodings
+            if isinstance(t, dict)
+            and (t.get("format") or {}).get("protocol") == "progressive"
+            and "mp4" in ((t.get("format") or {}).get("mime_type") or "")
+            and "encrypted" not in ((t.get("format") or {}).get("protocol") or "").lower()
+        ),
+        None,
+    )
+    hls_m4a = next(
+        (
+            t for t in transcodings
+            if isinstance(t, dict)
+            and (t.get("format") or {}).get("protocol") == "hls"
+            and "mp4" in ((t.get("format") or {}).get("mime_type") or "")
+            and "encrypted" not in ((t.get("format") or {}).get("protocol") or "").lower()
+        ),
+        None,
+    )
 
+    # Verzamel unieke kandidaat-transcodings voor parallelle validatie
+    candidate_cands = []
+    for cand in [prog_mp3, hls_mp3, prog_m4a, hls_m4a]:
+        if cand and isinstance(cand, dict) and cand.get("url") and cand not in candidate_cands:
+            candidate_cands.append(cand)
+
+    def _validate_transcoding(cand: dict) -> tuple[str, bool]:
+        stream_u = cand.get("url")
+        if not stream_u:
+            return "", False
+        try:
+            cdn = get_download_url(
+                stream_u,
+                client_id=active_client_id,
+                track_authorization=track_authorization,
+                is_direct=False,
+            )
+            return stream_u, bool(cdn)
+        except Exception:
+            return stream_u, False
+
+    valid_stream_urls: set[str] = set()
+    if candidate_cands:
+        max_workers = min(len(candidate_cands), 4)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for s_url, is_valid in executor.map(_validate_transcoding, candidate_cands):
+                if is_valid and s_url:
+                    valid_stream_urls.add(s_url)
+
+    # Voeg MP3 toe als optie indien een geldige stream beschikbaar is (progressive heeft voorkeur)
     chosen_mp3 = None
     mp3_protocol = None
-    for cand in ([prog_mp3] if prog_mp3 else []) + ([hls_mp3] if hls_mp3 else []):
-        cand_url = cand.get("url")
-        if not cand_url:
-            continue
-        try:
-            params = {}
-            if track_authorization:
-                params["track_authorization"] = track_authorization
-            chk, active_client_id = _fetch_with_retry(
-                cand_url,
-                params=params,
-                client_id=active_client_id,
-            )
-            if chk.status_code == 200 and chk.json().get("url"):
-                chosen_mp3 = cand
-                mp3_protocol = (cand.get("format") or {}).get("protocol", "progressive")
-                break
-        except Exception:
-            continue
-
-    # Fallback als validatiecheck faalde maar stream wel geconfigureerd is
-    if not chosen_mp3:
-        if prog_mp3:
-            chosen_mp3 = prog_mp3
-            mp3_protocol = "progressive"
-        elif hls_mp3:
-            chosen_mp3 = hls_mp3
-            mp3_protocol = "hls"
+    if prog_mp3 and prog_mp3.get("url") in valid_stream_urls:
+        chosen_mp3 = prog_mp3
+        mp3_protocol = (prog_mp3.get("format") or {}).get("protocol") or "progressive"
+    elif hls_mp3 and hls_mp3.get("url") in valid_stream_urls:
+        chosen_mp3 = hls_mp3
+        mp3_protocol = (hls_mp3.get("format") or {}).get("protocol") or "hls"
 
     if chosen_mp3:
         available_formats.append({
@@ -490,25 +518,24 @@ def get_track_info(
             "is_artist_download": False,
         })
 
-    # 3. Controleer op onbeveiligde M4A-streams (HLS MP4/AAC)
-    hls_m4a = next(
-        (
-            t for t in transcodings
-            if isinstance(t, dict)
-            and (t.get("format") or {}).get("protocol") == "hls"
-            and "mp4" in ((t.get("format") or {}).get("mime_type") or "")
-            and "encrypted" not in ((t.get("format") or {}).get("protocol") or "").lower()
-        ),
-        None,
-    )
-    if hls_m4a:
+    # Voeg M4A toe als optie indien een geldige stream beschikbaar is (progressive heeft voorkeur, anders HLS)
+    chosen_m4a = None
+    m4a_protocol = None
+    if prog_m4a and prog_m4a.get("url") in valid_stream_urls:
+        chosen_m4a = prog_m4a
+        m4a_protocol = (prog_m4a.get("format") or {}).get("protocol") or "progressive"
+    elif hls_m4a and hls_m4a.get("url") in valid_stream_urls:
+        chosen_m4a = hls_m4a
+        m4a_protocol = (hls_m4a.get("format") or {}).get("protocol") or "hls"
+
+    if chosen_m4a:
         available_formats.append({
             "id": "m4a",
             "label": "M4A (Hoge kwaliteit)",
             "extension": ".m4a",
             "media_type": "audio/mp4",
-            "stream_url": hls_m4a.get("url"),
-            "stream_protocol": "hls",
+            "stream_url": chosen_m4a.get("url"),
+            "stream_protocol": m4a_protocol,
             "direct_url": None,
             "is_artist_download": False,
         })
@@ -759,7 +786,7 @@ def stream_audio(download_url: str):
         lines = [line.strip() for line in playlist_text.splitlines() if line.strip()]
 
         # Controleer op #EXT-X-MAP:URI="..." (het MP4/M4A initialisatiesegment)
-        map_match = re.search(r'#EXT-X-MAP:[^\r\n]*URI="([^"]+)"', playlist_text)
+        map_match = re.search(r'#EXT-X-MAP:[^\r\n]*URI=["\']?([^"\',\s]+)["\']?', playlist_text, re.IGNORECASE)
         init_url = urllib.parse.urljoin(download_url, map_match.group(1)) if map_match else None
 
         # Filter alle regels die niet met '#' beginnen (segment URLs)

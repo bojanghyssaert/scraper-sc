@@ -723,8 +723,19 @@ def test_get_track_info_returns_available_formats():
     mock_stream.status_code = 200
     mock_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/prog.mp3"}
 
+    mock_m4a = MagicMock()
+    mock_m4a.status_code = 200
+    mock_m4a.json.return_value = {"url": "https://cf-media.sndcdn.com/stream.m3u8"}
+
+    def mock_get(url, *args, **kwargs):
+        if "prog_mp3" in url:
+            return mock_stream
+        if "hls_m4a" in url:
+            return mock_m4a
+        return mock_resolve
+
     with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
-         patch("backend.soundcloud_service.requests.get", side_effect=[mock_resolve, mock_stream]):
+         patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
 
         info = get_track_info("https://soundcloud.com/dual/track")
         assert "formats" in info
@@ -765,8 +776,19 @@ def test_get_track_info_select_m4a_format():
     mock_stream.status_code = 200
     mock_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/prog.mp3"}
 
+    mock_m4a = MagicMock()
+    mock_m4a.status_code = 200
+    mock_m4a.json.return_value = {"url": "https://cf-media.sndcdn.com/stream.m3u8"}
+
+    def mock_get(url, *args, **kwargs):
+        if "prog_mp3" in url:
+            return mock_stream
+        if "hls_m4a" in url:
+            return mock_m4a
+        return mock_resolve
+
     with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
-         patch("backend.soundcloud_service.requests.get", side_effect=[mock_resolve, mock_stream]):
+         patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
 
         info = get_track_info("https://soundcloud.com/select/track", format_id="m4a")
         assert info["format_id"] == "m4a"
@@ -774,6 +796,104 @@ def test_get_track_info_select_m4a_format():
         assert info["media_type"] == "audio/mp4"
         assert info["stream_url"] == "https://api-v2.soundcloud.com/media/hls_m4a"
         assert info["filename"].endswith(".m4a")
+
+
+def test_get_track_info_mp3_fails_and_m4a_succeeds():
+    """
+    Verifieert dat wanneer de MP3-transcoding een HTTP 400/404 fout geeft
+    en de M4A-transcoding wel geldig is, alleen M4A in 'formats' wordt opgenomen.
+    """
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "Broken MP3 Track",
+        "user": {"username": "Electro Producer"},
+        "duration": 200000,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                    "url": "https://api-v2.soundcloud.com/media/broken_mp3",
+                },
+                {
+                    "format": {"protocol": "hls", "mime_type": "audio/mp4"},
+                    "url": "https://api-v2.soundcloud.com/media/working_m4a",
+                },
+            ]
+        },
+    }
+
+    mock_400_mp3 = MagicMock()
+    mock_400_mp3.status_code = 400
+
+    mock_200_m4a = MagicMock()
+    mock_200_m4a.status_code = 200
+    mock_200_m4a.json.return_value = {"url": "https://cf-media.sndcdn.com/playlist.m3u8"}
+
+    def mock_get(url, *args, **kwargs):
+        if "broken_mp3" in url:
+            return mock_400_mp3
+        if "working_m4a" in url:
+            return mock_200_m4a
+        return mock_resolve
+
+    with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
+         patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
+
+        info = get_track_info("https://soundcloud.com/artist/broken-mp3-track")
+
+        assert len(info["formats"]) == 1
+        assert info["formats"][0]["id"] == "m4a"
+        format_ids = [f["id"] for f in info["formats"]]
+        assert "mp3" not in format_ids
+        assert info["format_id"] == "m4a"
+        assert info["extension"] == ".m4a"
+        assert info["media_type"] == "audio/mp4"
+        assert info["stream_url"] == "https://api-v2.soundcloud.com/media/working_m4a"
+        assert info["stream_protocol"] == "hls"
+
+
+def test_get_track_info_all_transcodings_fail_raises_soundcloud_error():
+    """
+    Verifieert dat wanneer alle niet-DRM transcodings falen en de track niet downloadable is,
+    een duidelijke SoundCloudError wordt opgegooid.
+    """
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "All Streams Broken Track",
+        "user": {"username": "Broken Artist"},
+        "duration": 150000,
+        "downloadable": False,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+                    "url": "https://api-v2.soundcloud.com/media/broken_mp3",
+                },
+                {
+                    "format": {"protocol": "hls", "mime_type": "audio/mp4"},
+                    "url": "https://api-v2.soundcloud.com/media/broken_m4a",
+                },
+            ]
+        },
+    }
+
+    mock_404 = MagicMock()
+    mock_404.status_code = 404
+
+    def mock_get(url, *args, **kwargs):
+        if "media/broken_" in url:
+            return mock_404
+        return mock_resolve
+
+    with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
+         patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
+
+        with pytest.raises(SoundCloudError) as exc_info:
+            get_track_info("https://soundcloud.com/artist/all-broken-track")
+
+        assert "Geen ondersteunde onbeveiligde MP3- of M4A-stream gevonden" in str(exc_info.value)
 
 
 def test_get_track_info_official_download_with_formats():
@@ -843,8 +963,19 @@ def test_get_track_info_invalid_format_id_raises():
     mock_stream.status_code = 200
     mock_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/prog.mp3"}
 
+    mock_m4a = MagicMock()
+    mock_m4a.status_code = 200
+    mock_m4a.json.return_value = {"url": "https://cf-media.sndcdn.com/stream.m3u8"}
+
+    def mock_get(url, *args, **kwargs):
+        if "prog_mp3" in url:
+            return mock_stream
+        if "hls_m4a" in url:
+            return mock_m4a
+        return mock_resolve
+
     with patch("backend.soundcloud_service.get_client_id", return_value="dummy_id"), \
-         patch("backend.soundcloud_service.requests.get", side_effect=[mock_resolve, mock_stream]):
+         patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
 
         with pytest.raises(SoundCloudError) as exc_info:
             get_track_info("https://soundcloud.com/single/track", format_id="ogg")
@@ -953,6 +1084,7 @@ def test_get_track_info_null_publisher_metadata_and_user():
                 }
             ]
         },
+        "url": "https://cf-media.sndcdn.com/stream.mp3",
     }
 
     with patch("backend.soundcloud_service._fetch_with_retry", return_value=(mock_200, "cid_123")):

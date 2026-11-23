@@ -259,6 +259,41 @@ def test_api_preview_success(client):
         assert response.content == b"preview_chunk_1preview_chunk_2"
 
 
+def test_api_preview_m4a_success(client):
+    """Verifieert dat /api/preview voor een M4A-track status 200 en content-type: audio/mp4 retourneert."""
+    mock_info = {
+        "title": "Preview M4A Track",
+        "artist": "M4A Artist",
+        "filename": "M4A Artist - Preview M4A Track.m4a",
+        "media_type": "audio/mp4",
+        "extension": ".m4a",
+        "format_id": "m4a",
+        "stream_url": "https://api-v2.soundcloud.com/media/hls_m4a",
+        "stream_protocol": "hls",
+        "formats": [
+            {"id": "m4a", "label": "M4A (Hoge kwaliteit)", "extension": ".m4a"}
+        ],
+    }
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info) as mock_get_info, \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/playlist.m3u8"), \
+         patch("backend.main.stream_audio", return_value=iter([b"m4a_init_chunk", b"m4a_audio_chunk"])):
+
+        response = client.get("/api/preview?url=https://soundcloud.com/artist/m4a-track&format_id=m4a")
+        assert response.status_code == 200
+        assert "audio/mp4" in response.headers["content-type"]
+        assert "content-disposition" not in response.headers
+        assert response.headers["content-length"] == str(len(b"m4a_init_chunkm4a_audio_chunk"))
+        assert response.headers.get("accept-ranges") == "bytes"
+        assert response.content == b"m4a_init_chunkm4a_audio_chunk"
+        mock_get_info.assert_called_once_with(
+            "https://soundcloud.com/artist/m4a-track",
+            "dummy_id",
+            format_id="m4a",
+        )
+
+
 def test_api_preview_not_found(client):
     """Verifieert dat /api/preview 400 retourneert als de track niet gevonden wordt."""
     with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
