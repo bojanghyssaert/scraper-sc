@@ -5,6 +5,7 @@ Bevat alle logica voor het ophalen van de client_id,
 track-metadata en de download-URL — zonder enige GUI-afhankelijkheid.
 """
 
+import concurrent.futures
 import re
 import urllib.parse
 from typing import Callable
@@ -566,20 +567,41 @@ def stream_audio(download_url: str):
             except requests.RequestException as exc:
                 raise SoundCloudError(f"Netwerkfout tijdens streamen van init-segment: {exc}") from exc
 
-        # Stream elk segment achter elkaar door in chunks
-        for seg_url in segment_urls:
+        def _fetch_segment(seg_url: str) -> bytes:
             try:
-                with requests.get(seg_url, headers=HEADERS, stream=True, timeout=TIMEOUT) as seg_resp:
-                    if seg_resp.status_code == 200:
-                        for chunk in seg_resp.iter_content(chunk_size=1024 * 64):
-                            if chunk:
-                                yield chunk
-                    else:
-                        raise SoundCloudError(
-                            f"Fout bij downloaden van HLS segment: HTTP {seg_resp.status_code}"
-                        )
+                resp = requests.get(seg_url, headers=HEADERS, timeout=TIMEOUT)
+                if resp.status_code != 200:
+                    raise SoundCloudError(
+                        f"Fout bij downloaden van HLS segment: HTTP {resp.status_code}"
+                    )
+                return resp.content
+            except SoundCloudError:
+                raise
             except requests.RequestException as exc:
-                raise SoundCloudError(f"Netwerkfout tijdens streamen van segment: {exc}") from exc
+                raise SoundCloudError(
+                    f"Netwerkfout tijdens streamen van segment: {exc}"
+                ) from exc
+            except Exception as exc:
+                raise SoundCloudError(
+                    f"Onverwachte fout tijdens ophalen van segment: {exc}"
+                ) from exc
+
+        # Haal HLS-segmenten parallel op met max 6 workers en yield chunks exact in playlist-volgorde
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                for segment_chunk in executor.map(_fetch_segment, segment_urls):
+                    if segment_chunk:
+                        yield segment_chunk
+        except SoundCloudError:
+            raise
+        except requests.RequestException as exc:
+            raise SoundCloudError(
+                f"Netwerkfout tijdens parallel streamen van segmenten: {exc}"
+            ) from exc
+        except Exception as exc:
+            raise SoundCloudError(
+                f"Fout tijdens parallel streamen van HLS segmenten: {exc}"
+            ) from exc
     else:
         try:
             with requests.get(
