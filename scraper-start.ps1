@@ -60,7 +60,7 @@ if ($staleConns) {
     Write-Host "Achtergebleven processen op poort 8000 of 5173 gedetecteerd. Deze worden eerst beëindigd..." -ForegroundColor Yellow
     foreach ($p in $stalePids) {
         if ($p -and $p -gt 4) {
-            taskkill /PID $p /T /F > $null 2>&1
+            taskkill /PID $p /T /F 2>&1 | Out-Null
         }
     }
     Start-Sleep -Seconds 1
@@ -81,7 +81,7 @@ try {
 
     # Start Vue-frontend op de achtergrond en schrijf opstart- en foutmeldingen naar logs/frontend.log
     Write-Host "[2/2] Vue-frontend opstarten op poort 5173..." -ForegroundColor Yellow
-    $frontendCmd = "`"$NpmCmd`" --prefix frontend run dev > `"$FrontendLog`" 2>&1"
+    $frontendCmd = "`"$NpmCmd`" --prefix frontend run dev < nul > `"$FrontendLog`" 2>&1"
     $frontendProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$frontendCmd`"" -PassThru -NoNewWindow
 
     # Wacht maximaal 10 seconden tot http://127.0.0.1:8000 en http://localhost:5173 bereikbaar zijn
@@ -186,12 +186,12 @@ finally {
 
     if ($backendProcess -and -not $backendProcess.HasExited) {
         Write-Host "FastAPI-backend beëindigen (PID $($backendProcess.Id))..."
-        taskkill /PID $backendProcess.Id /T /F > $null 2>&1
+        taskkill /PID $backendProcess.Id /T /F 2>&1 | Out-Null
     }
 
     if ($frontendProcess -and -not $frontendProcess.HasExited) {
         Write-Host "Vue-frontend beëindigen (PID $($frontendProcess.Id))..."
-        taskkill /PID $frontendProcess.Id /T /F > $null 2>&1
+        taskkill /PID $frontendProcess.Id /T /F 2>&1 | Out-Null
     }
 
     # Naloop om eventuele overgebleven child-processen op poort 8000 en 5173 definitief te stoppen
@@ -199,7 +199,7 @@ finally {
     if ($remainingPids) {
         foreach ($rPid in $remainingPids) {
             if ($rPid -and $rPid -gt 4) {
-                taskkill /PID $rPid /T /F > $null 2>&1
+                taskkill /PID $rPid /T /F 2>&1 | Out-Null
             }
         }
     }

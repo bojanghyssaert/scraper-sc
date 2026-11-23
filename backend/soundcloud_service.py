@@ -262,8 +262,8 @@ def get_track_info(
     if data.get("kind") in ("playlist", "system-playlist"):
         playlist_title = data.get("title") or "Onbekende afspeellijst"
         playlist_artist = (
-            data.get("publisher_metadata", {}).get("artist")
-            or data.get("user", {}).get("username")
+            (data.get("publisher_metadata") or {}).get("artist")
+            or (data.get("user") or {}).get("username")
             or "Onbekende artiest"
         )
         playlist_artwork = data.get("artwork_url") or ""
@@ -302,19 +302,19 @@ def get_track_info(
 
             t_title = item.get("title") or "Onbekende titel"
             t_artist = (
-                item.get("publisher_metadata", {}).get("artist")
-                or item.get("user", {}).get("username")
+                (item.get("publisher_metadata") or {}).get("artist")
+                or (item.get("user") or {}).get("username")
                 or playlist_artist
             )
             t_duration = item.get("duration", 0)
             t_permalink = item.get("permalink_url") or ""
 
             t_downloadable = bool(item.get("downloadable")) and bool(item.get("has_downloads_left", True))
-            t_transcodings = item.get("media", {}).get("transcodings", [])
+            t_transcodings = (item.get("media") or {}).get("transcodings") or []
             has_unenc = any(
                 isinstance(tc, dict)
-                and tc.get("format", {}).get("protocol") in ("progressive", "hls")
-                and "encrypted" not in tc.get("format", {}).get("protocol", "").lower()
+                and (tc.get("format") or {}).get("protocol") in ("progressive", "hls")
+                and "encrypted" not in ((tc.get("format") or {}).get("protocol") or "").lower()
                 for tc in t_transcodings
             )
             t_is_drm = (not has_unenc) and (not item.get("downloadable", False))
@@ -345,8 +345,8 @@ def get_track_info(
 
     title = data.get("title") or "Onbekende titel"
     artist = (
-        data.get("publisher_metadata", {}).get("artist")
-        or data.get("user", {}).get("username")
+        (data.get("publisher_metadata") or {}).get("artist")
+        or (data.get("user") or {}).get("username")
         or "Onbekende artiest"
     )
 
@@ -358,7 +358,7 @@ def get_track_info(
     duration_ms = data.get("duration", 0)
     track_id = data.get("id")
     track_authorization = data.get("track_authorization")
-    transcodings = data.get("media", {}).get("transcodings", [])
+    transcodings = (data.get("media") or {}).get("transcodings") or []
 
     # Verzamel alle beschikbare onbeveiligde formaten
     available_formats: list[dict] = []
@@ -426,21 +426,23 @@ def get_track_info(
     prog_mp3 = next(
         (
             t for t in transcodings
-            if t.get("format", {}).get("protocol") == "progressive"
-            and "mpeg" in t.get("format", {}).get("mime_type", "")
-            and "encrypted" not in t.get("format", {}).get("protocol", "").lower()
+            if isinstance(t, dict)
+            and (t.get("format") or {}).get("protocol") == "progressive"
+            and "mpeg" in ((t.get("format") or {}).get("mime_type") or "")
+            and "encrypted" not in ((t.get("format") or {}).get("protocol") or "").lower()
         ),
         None,
     )
     hls_mp3 = next(
         (
             t for t in transcodings
-            if t.get("format", {}).get("protocol") == "hls"
+            if isinstance(t, dict)
+            and (t.get("format") or {}).get("protocol") == "hls"
             and (
-                "mpegurl" in t.get("format", {}).get("mime_type", "")
-                or "mpeg" in t.get("format", {}).get("mime_type", "")
+                "mpegurl" in ((t.get("format") or {}).get("mime_type") or "")
+                or "mpeg" in ((t.get("format") or {}).get("mime_type") or "")
             )
-            and "encrypted" not in t.get("format", {}).get("protocol", "").lower()
+            and "encrypted" not in ((t.get("format") or {}).get("protocol") or "").lower()
         ),
         None,
     )
@@ -462,7 +464,7 @@ def get_track_info(
             )
             if chk.status_code == 200 and chk.json().get("url"):
                 chosen_mp3 = cand
-                mp3_protocol = cand.get("format", {}).get("protocol", "progressive")
+                mp3_protocol = (cand.get("format") or {}).get("protocol", "progressive")
                 break
         except Exception:
             continue
@@ -492,9 +494,10 @@ def get_track_info(
     hls_m4a = next(
         (
             t for t in transcodings
-            if t.get("format", {}).get("protocol") == "hls"
-            and "mp4" in t.get("format", {}).get("mime_type", "")
-            and "encrypted" not in t.get("format", {}).get("protocol", "").lower()
+            if isinstance(t, dict)
+            and (t.get("format") or {}).get("protocol") == "hls"
+            and "mp4" in ((t.get("format") or {}).get("mime_type") or "")
+            and "encrypted" not in ((t.get("format") or {}).get("protocol") or "").lower()
         ),
         None,
     )
@@ -513,15 +516,21 @@ def get_track_info(
     # Foutafhandeling indien er geen enkel ondersteund onbeveiligd formaat beschikbaar is
     if not available_formats:
         format_list = [
-            f"{t.get('format', {}).get('protocol')} ({t.get('format', {}).get('mime_type')})"
+            f"{(t.get('format') or {}).get('protocol')} ({(t.get('format') or {}).get('mime_type')})"
             for t in transcodings
+            if isinstance(t, dict)
         ]
         print(f"Beschikbare formaten voor '{title}':", format_list)
 
-        has_encrypted = any("encrypted" in t.get("format", {}).get("protocol", "").lower() for t in transcodings)
+        has_encrypted = any(
+            "encrypted" in ((t.get("format") or {}).get("protocol") or "").lower()
+            for t in transcodings
+            if isinstance(t, dict)
+        )
         has_unencrypted = any(
-            t.get("format", {}).get("protocol") in ("progressive", "hls")
-            and "encrypted" not in t.get("format", {}).get("protocol", "").lower()
+            isinstance(t, dict)
+            and (t.get("format") or {}).get("protocol") in ("progressive", "hls")
+            and "encrypted" not in ((t.get("format") or {}).get("protocol") or "").lower()
             for t in transcodings
         )
 
@@ -683,14 +692,14 @@ def search_tracks(
         raise SoundCloudError("Ongeldig JSON-antwoord van SoundCloud zoek-API.") from exc
 
     results: list[dict] = []
-    for item in data.get("collection", []):
+    for item in (data.get("collection") or []):
         if not isinstance(item, dict):
             continue
 
         title = item.get("title") or "Onbekende titel"
         artist = (
-            item.get("publisher_metadata", {}).get("artist")
-            or item.get("user", {}).get("username")
+            (item.get("publisher_metadata") or {}).get("artist")
+            or (item.get("user") or {}).get("username")
             or "Onbekende artiest"
         )
         artwork_url = item.get("artwork_url") or ""
@@ -700,11 +709,11 @@ def search_tracks(
         permalink_url = item.get("permalink_url") or ""
 
         downloadable = bool(item.get("downloadable")) and bool(item.get("has_downloads_left", True))
-        transcodings = item.get("media", {}).get("transcodings", [])
+        transcodings = (item.get("media") or {}).get("transcodings") or []
         has_unencrypted_stream = any(
             isinstance(t, dict)
-            and t.get("format", {}).get("protocol") in ("progressive", "hls")
-            and "encrypted" not in t.get("format", {}).get("protocol", "").lower()
+            and (t.get("format") or {}).get("protocol") in ("progressive", "hls")
+            and "encrypted" not in ((t.get("format") or {}).get("protocol") or "").lower()
             for t in transcodings
         )
         is_drm = (not has_unencrypted_stream) and (not downloadable)
