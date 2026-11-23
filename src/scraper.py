@@ -61,6 +61,35 @@ def paste_from_clipboard():
         pass
 
 
+def update_track_preview(title, artist):
+    def _update():
+        preview_title_val.config(text=title)
+        preview_artist_val.config(text=artist)
+    venster.after(0, _update)
+
+
+def reset_track_preview():
+    def _reset():
+        preview_title_val.config(text="Nog geen nummer geladen")
+        preview_artist_val.config(text="-")
+    venster.after(0, _reset)
+
+
+def update_progress(percent, text=""):
+    def _update():
+        progress_bar["value"] = percent
+        if text:
+            progress_detail_label.config(text=text)
+    venster.after(0, _update)
+
+
+def reset_progress():
+    def _reset():
+        progress_bar["value"] = 0
+        progress_detail_label.config(text="Wachten op download...")
+    venster.after(0, _reset)
+
+
 def get_client_id():
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -95,20 +124,21 @@ def download_track(track_url, client_id, savemap):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
-    update_status("Gegevens ophalen...", "blue")
+    update_status("Gegevens ophalen...", STATUS_INFO)
 
     resolve_url = f"https://api-v2.soundcloud.com/resolve?url={track_url}&client_id={client_id}"
     try:
         response = requests.get(resolve_url, headers=headers, timeout=10)
     except requests.RequestException as e:
         show_ui_message("error", "Netwerkfout", f"Kan geen verbinding maken met SoundCloud:\n{e}")
-        update_status("Netwerkfout", "red")
+        update_status("Netwerkfout", STATUS_ERROR)
         set_download_state(True)
         return
 
     if response.status_code != 200:
         show_ui_message("error", "Fout", "Kan de track niet vinden of de link is ongeldig.")
-        update_status("Track niet gevonden", "red")
+        update_status("Track niet gevonden", STATUS_ERROR)
+        update_track_preview("Niet gevonden", "-")
         set_download_state(True)
         return
 
@@ -116,12 +146,20 @@ def download_track(track_url, client_id, savemap):
         track_info = response.json()
     except ValueError:
         show_ui_message("error", "Fout", "Ongeldig antwoord ontvangen van SoundCloud.")
-        update_status("Fout bij verwerken van data", "red")
+        update_status("Fout bij verwerken van data", STATUS_ERROR)
         set_download_state(True)
         return
 
-    title = track_info.get('title', 'onbekende_track')
-    print(f"Nummer gevonden: {title}")
+    title = track_info.get('title', 'Onbekende titel')
+    artist = (
+        track_info.get('user', {}).get('username')
+        or track_info.get('publisher_metadata', {}).get('artist')
+        or "Onbekende artiest"
+    )
+    print(f"Nummer gevonden: {title} van {artist}")
+
+    # Direct tonen in de interface vóórdat het downloaden begint
+    update_track_preview(title, artist)
 
     stream_url = None
     for transcoding in track_info.get('media', {}).get('transcodings', []):
@@ -131,32 +169,32 @@ def download_track(track_url, client_id, savemap):
 
     if not stream_url:
         show_ui_message("error", "Fout", "Kan geen MP3 vinden voor dit liedje.")
-        update_status("Geen MP3 beschikbaar", "red")
+        update_status("Geen MP3 beschikbaar", STATUS_ERROR)
         set_download_state(True)
         return
 
-    update_status("Downloadlink genereren...", "blue")
+    update_status("Downloadlink genereren...", STATUS_INFO)
     stream_url_with_auth = f"{stream_url}?client_id={client_id}"
     try:
         media_response = requests.get(stream_url_with_auth, headers=headers, timeout=10)
         if media_response.status_code != 200:
             show_ui_message("error", "Fout", "Kon downloadlink niet ophalen van SoundCloud.")
-            update_status("Fout bij downloadlink", "red")
+            update_status("Fout bij downloadlink", STATUS_ERROR)
             set_download_state(True)
             return
         download_url = media_response.json().get('url')
         if not download_url:
             show_ui_message("error", "Fout", "Geen geldige downloadlocatie gevonden in SoundCloud antwoord.")
-            update_status("Geen downloadlocatie", "red")
+            update_status("Geen downloadlocatie", STATUS_ERROR)
             set_download_state(True)
             return
     except (requests.RequestException, ValueError) as e:
         show_ui_message("error", "Netwerkfout", f"Fout bij ophalen downloadlink:\n{e}")
-        update_status("Fout bij downloadlink", "red")
+        update_status("Fout bij downloadlink", STATUS_ERROR)
         set_download_state(True)
         return
 
-    update_status("Audiobestand downloaden (dit kan even duren)...", "blue")
+    update_status("Audiobestand downloaden...", STATUS_INFO)
     safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip() or "track"
     filename = f"{safe_title}.mp3"
     full_path = os.path.join(savemap, filename)
@@ -165,28 +203,44 @@ def download_track(track_url, client_id, savemap):
         with requests.get(download_url, headers=headers, stream=True, timeout=10) as audio_response:
             if audio_response.status_code != 200:
                 show_ui_message("error", "Fout", f"Download mislukt met statuscode {audio_response.status_code}.")
-                update_status("Download mislukt", "red")
+                update_status("Download mislukt", STATUS_ERROR)
                 set_download_state(True)
                 return
+
+            content_length = audio_response.headers.get('content-length')
+            total_size = int(content_length) if content_length and content_length.isdigit() else 0
+            downloaded = 0
 
             with open(full_path, 'wb') as file:
                 for chunk in audio_response.iter_content(chunk_size=1024 * 64):
                     if chunk:
                         file.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = min(100.0, (downloaded / total_size) * 100)
+                            mb_done = downloaded / (1024 * 1024)
+                            mb_total = total_size / (1024 * 1024)
+                            update_progress(percent, f"{mb_done:.1f} MB / {mb_total:.1f} MB ({int(percent)}%)")
+                        else:
+                            mb_done = downloaded / (1024 * 1024)
+                            update_progress(0, f"{mb_done:.1f} MB gedownload...")
+
+            if total_size > 0:
+                update_progress(100.0, f"{total_size / (1024 * 1024):.1f} MB / {total_size / (1024 * 1024):.1f} MB (100%)")
     except requests.RequestException as e:
         show_ui_message("error", "Netwerkfout", f"Fout tijdens het downloaden van audio:\n{e}")
-        update_status("Download mislukt", "red")
+        update_status("Download mislukt", STATUS_ERROR)
         set_download_state(True)
         return
     except OSError as e:
         show_ui_message("error", "Bestandsfout", f"Kon het bestand niet opslaan:\n{e}")
-        update_status("Fout bij opslaan", "red")
+        update_status("Fout bij opslaan", STATUS_ERROR)
         set_download_state(True)
         return
 
-    update_status("Download succesvol afgerond!", "green")
+    update_status("Download succesvol afgerond!", STATUS_SUCCESS)
     clear_input()
-    show_ui_message("info", "Succes", f"'{title}' is succesvol opgeslagen!")
+    show_ui_message("info", "Succes", f"'{title}' van {artist} is succesvol opgeslagen!")
     set_download_state(True)
 
 
@@ -202,7 +256,9 @@ def start_download():
         return
 
     set_download_state(False)
-    update_status("Starten met downloaden...", "blue")
+    reset_progress()
+    update_track_preview("Laden...", "Laden...")
+    update_status("Starten met downloaden...", STATUS_INFO)
 
     download_thread = threading.Thread(
         target=download_track,
@@ -229,13 +285,26 @@ if __name__ == "__main__":
 
         venster = tk.Tk()
         venster.title("SoundCloud Downloader")
-        venster.geometry("580x380")
-        venster.minsize(540, 360)
+        venster.geometry("600x520")
+        venster.minsize(560, 480)
         venster.configure(bg=BG_COLOR)
+
+        # Style voor ttk widgets (zoals de voortgangsbalk)
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure(
+            "SoundCloud.Horizontal.TProgressbar",
+            troughcolor=INPUT_BG,
+            background=ACCENT_COLOR,
+            darkcolor=ACCENT_COLOR,
+            lightcolor=ACCENT_HOVER,
+            bordercolor=CARD_BG,
+            thickness=10
+        )
 
         # Header sectie
         header_frame = tk.Frame(venster, bg=BG_COLOR)
-        header_frame.pack(fill="x", padx=30, pady=(25, 15))
+        header_frame.pack(fill="x", padx=30, pady=(25, 12))
 
         titel_label = tk.Label(
             header_frame,
@@ -256,8 +325,8 @@ if __name__ == "__main__":
         subtitel_label.pack(anchor="w", pady=(3, 0))
 
         # Invoerkaart
-        card_frame = tk.Frame(venster, bg=CARD_BG, padx=20, pady=20, relief="flat")
-        card_frame.pack(fill="x", padx=30, pady=10)
+        card_frame = tk.Frame(venster, bg=CARD_BG, padx=20, pady=16, relief="flat")
+        card_frame.pack(fill="x", padx=30, pady=(0, 10))
 
         invoer_label = tk.Label(
             card_frame,
@@ -303,9 +372,96 @@ if __name__ == "__main__":
         plak_knop.bind("<Enter>", lambda e: plak_knop.config(bg=BTN_SECONDARY_HOVER))
         plak_knop.bind("<Leave>", lambda e: plak_knop.config(bg=BTN_SECONDARY))
 
+        # Track Preview Kaart
+        preview_frame = tk.Frame(venster, bg=CARD_BG, padx=20, pady=12, relief="flat")
+        preview_frame.pack(fill="x", padx=30, pady=(0, 10))
+
+        preview_header = tk.Label(
+            preview_frame,
+            text="TRACK PREVIEW",
+            font=("Segoe UI", 8, "bold"),
+            fg=ACCENT_COLOR,
+            bg=CARD_BG
+        )
+        preview_header.pack(anchor="w", pady=(0, 4))
+
+        preview_title_row = tk.Frame(preview_frame, bg=CARD_BG)
+        preview_title_row.pack(fill="x", pady=1)
+        tk.Label(
+            preview_title_row,
+            text="Titel:",
+            font=("Segoe UI", 9, "bold"),
+            fg=TEXT_MUTED,
+            bg=CARD_BG,
+            width=8,
+            anchor="w"
+        ).pack(side="left")
+        preview_title_val = tk.Label(
+            preview_title_row,
+            text="Nog geen nummer geladen",
+            font=("Segoe UI", 9, "bold"),
+            fg=TEXT_COLOR,
+            bg=CARD_BG,
+            anchor="w"
+        )
+        preview_title_val.pack(side="left", fill="x", expand=True)
+
+        preview_artist_row = tk.Frame(preview_frame, bg=CARD_BG)
+        preview_artist_row.pack(fill="x", pady=1)
+        tk.Label(
+            preview_artist_row,
+            text="Artiest:",
+            font=("Segoe UI", 9, "bold"),
+            fg=TEXT_MUTED,
+            bg=CARD_BG,
+            width=8,
+            anchor="w"
+        ).pack(side="left")
+        preview_artist_val = tk.Label(
+            preview_artist_row,
+            text="-",
+            font=("Segoe UI", 9),
+            fg=TEXT_COLOR,
+            bg=CARD_BG,
+            anchor="w"
+        )
+        preview_artist_val.pack(side="left", fill="x", expand=True)
+
+        # Voortgangskaart
+        progress_frame = tk.Frame(venster, bg=CARD_BG, padx=20, pady=12, relief="flat")
+        progress_frame.pack(fill="x", padx=30, pady=(0, 10))
+
+        progress_header_row = tk.Frame(progress_frame, bg=CARD_BG)
+        progress_header_row.pack(fill="x", pady=(0, 6))
+
+        tk.Label(
+            progress_header_row,
+            text="VOORTGANG",
+            font=("Segoe UI", 8, "bold"),
+            fg=ACCENT_COLOR,
+            bg=CARD_BG
+        ).pack(side="left")
+
+        progress_detail_label = tk.Label(
+            progress_header_row,
+            text="Wachten op download...",
+            font=("Segoe UI", 8),
+            fg=TEXT_MUTED,
+            bg=CARD_BG
+        )
+        progress_detail_label.pack(side="right")
+
+        progress_bar = ttk.Progressbar(
+            progress_frame,
+            style="SoundCloud.Horizontal.TProgressbar",
+            orient="horizontal",
+            mode="determinate"
+        )
+        progress_bar.pack(fill="x")
+
         # Actieknoppen & Status sectie
         actie_frame = tk.Frame(venster, bg=BG_COLOR)
-        actie_frame.pack(fill="x", padx=30, pady=15)
+        actie_frame.pack(fill="x", padx=30, pady=(5, 15))
 
         download_knop = tk.Button(
             actie_frame,
