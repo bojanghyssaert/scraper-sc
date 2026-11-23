@@ -9,31 +9,145 @@
         </svg>
         <span>SoundCloud Downloader</span>
       </div>
-      <p class="subtitle">Voer een SoundCloud-link in en download de track in de gewenste kwaliteit</p>
+      <p class="subtitle">Zoek op SoundCloud of voer een track-link in om direct te beluisteren en downloaden</p>
     </header>
 
     <!-- ── Invoerkaart ── -->
     <section class="card">
-      <label class="field-label">SoundCloud Track URL</label>
-      <div class="input-row">
-        <input
-          v-model="trackUrl"
-          class="url-input"
-          type="url"
-          placeholder="https://soundcloud.com/artiest/track"
-          @keyup.enter="fetchTrack"
-          @paste="handlePaste"
-          :disabled="loading || downloading"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <button class="btn btn-secondary" @click="pasteFromClipboard" :disabled="loading || downloading" title="Plakken vanuit klembord">
-          📋 Plakken
+      <!-- Modus-schakelaar: Zoek op naam / Plak URL -->
+      <div class="mode-switch">
+        <button
+          type="button"
+          class="mode-btn"
+          :class="{ active: inputMode === 'search' }"
+          @click="setMode('search')"
+        >
+          🔍 Zoek op naam
         </button>
-        <button class="btn btn-accent" @click="fetchTrack" :disabled="!trackUrl.trim() || loading || downloading">
-          <span v-if="loading" class="spinner"></span>
-          <span v-else>Zoek track</span>
+        <button
+          type="button"
+          class="mode-btn"
+          :class="{ active: inputMode === 'url' }"
+          @click="setMode('url')"
+        >
+          🔗 Plak URL
         </button>
+      </div>
+
+      <!-- Modus: Zoeken op naam -->
+      <div v-if="inputMode === 'search'" class="input-block">
+        <label class="field-label" for="search-input">ZOEKEN OP SOUNDCLOUD</label>
+        <div class="input-row">
+          <input
+            id="search-input"
+            v-model="searchQuery"
+            class="url-input"
+            type="text"
+            placeholder="Artiest of titel (bijv. Flume, Odesza, Martin Garrix)..."
+            @keyup.enter="performSearch"
+            @paste="handleSearchPaste"
+            :disabled="searching || loading || downloading"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button
+            class="btn btn-accent"
+            @click="performSearch"
+            :disabled="!searchQuery.trim() || searching || loading || downloading"
+          >
+            <span v-if="searching" class="spinner"></span>
+            <span v-else>Zoeken</span>
+          </button>
+        </div>
+
+        <p v-if="searchError" class="status error">❌ {{ searchError }}</p>
+        <p v-if="hasSearched && searchResults.length === 0 && !searching && !searchError" class="status muted-info">
+          Geen tracks gevonden voor '{{ lastSearchedQuery }}'. Probeer een andere artiest of titel.
+        </p>
+
+        <!-- Zoekresultatenlijst -->
+        <transition name="fade">
+          <div v-if="searchResults.length > 0" class="search-results">
+            <div class="search-results-header">
+              <span class="field-label">ZOEKRESULTATEN ({{ searchResults.length }})</span>
+              <button type="button" class="btn-text" @click="clearSearch" title="Resultaten wissen">
+                ✕ Wissen
+              </button>
+            </div>
+
+            <div class="search-list">
+              <div
+                v-for="item in searchResults"
+                :key="item.permalink_url"
+                class="search-item"
+                :class="{
+                  'is-selected': trackUrl === item.permalink_url && track,
+                  'is-drm': item.is_drm,
+                }"
+                @click="selectSearchResult(item)"
+                role="button"
+                tabindex="0"
+                @keydown.enter="selectSearchResult(item)"
+                :title="item.is_drm ? `${item.title} (DRM-beveiligd)` : item.title"
+              >
+                <img
+                  v-if="item.artwork_url"
+                  :src="item.artwork_url"
+                  :alt="`Cover van ${item.title}`"
+                  class="search-thumb"
+                  @error="item.artwork_url = ''"
+                />
+                <div v-else class="search-thumb-placeholder">🎵</div>
+
+                <div class="search-details">
+                  <div class="search-title-row">
+                    <span class="search-title">{{ item.title }}</span>
+                    <span v-if="item.is_drm" class="badge-drm" title="Dit nummer is DRM-beveiligd door SoundCloud">
+                      🔒 DRM
+                    </span>
+                  </div>
+                  <div class="search-sub-row">
+                    <span class="search-artist">{{ item.artist }}</span>
+                    <span class="search-dot">•</span>
+                    <span class="search-duration">{{ formatDuration(item.duration_ms) }}</span>
+                  </div>
+                </div>
+
+                <div class="search-action">
+                  <span class="search-action-btn">
+                    {{ trackUrl === item.permalink_url && track ? 'Geselecteerd' : 'Kies track' }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </transition>
+      </div>
+
+      <!-- Modus: Direct URL plakken -->
+      <div v-else class="input-block">
+        <label class="field-label" for="track-url-input">SOUNDCLOUD TRACK URL</label>
+        <div class="input-row">
+          <input
+            id="track-url-input"
+            v-model="trackUrl"
+            class="url-input"
+            type="url"
+            placeholder="https://soundcloud.com/artiest/track"
+            @keyup.enter="fetchTrack"
+            @paste="handlePaste"
+            :disabled="loading || downloading"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn btn-secondary" @click="pasteFromClipboard" :disabled="loading || downloading" title="Plakken vanuit klembord">
+            📋 Plakken
+          </button>
+          <button class="btn btn-accent" @click="fetchTrack" :disabled="!trackUrl.trim() || loading || downloading">
+            <span v-if="loading" class="spinner"></span>
+            <span v-else>Zoek track</span>
+          </button>
+        </div>
       </div>
 
       <!-- Algemene foutmelding (alleen bij niet-DRM fouten) -->
@@ -156,6 +270,14 @@ import AudioPlayer from './components/AudioPlayer.vue'
 
 const API = 'http://localhost:8000'
 
+const inputMode         = ref('search')
+const searchQuery       = ref('')
+const searching         = ref(false)
+const searchResults     = ref([])
+const searchError       = ref('')
+const hasSearched       = ref(false)
+const lastSearchedQuery = ref('')
+
 const trackUrl          = ref('')
 const track             = ref(null)
 const selectedFormatId  = ref('')
@@ -219,6 +341,72 @@ function isSoundCloudUrl(url) {
     ) && parsed.pathname.length > 1
   } catch {
     return false
+  }
+}
+
+// ── Modus-beheer ──
+function setMode(mode) {
+  inputMode.value = mode
+  searchError.value = ''
+  fetchError.value = ''
+}
+
+// ── SoundCloud Zoeken ──
+async function performSearch() {
+  const query = searchQuery.value.trim()
+  if (!query) return
+
+  // Als er een geldige SoundCloud URL wordt ingevoerd in het zoekveld
+  if (isSoundCloudUrl(query)) {
+    inputMode.value = 'url'
+    trackUrl.value = query
+    fetchTrack()
+    return
+  }
+
+  searching.value = true
+  searchError.value = ''
+  hasSearched.value = true
+  lastSearchedQuery.value = query
+
+  try {
+    const res = await fetch(`${API}/api/search?q=${encodeURIComponent(query)}&limit=8`)
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      searchError.value = data.detail || `Fout ${res.status}: Kan zoekresultaten niet ophalen.`
+      searchResults.value = []
+      return
+    }
+    const data = await res.json()
+    searchResults.value = Array.isArray(data.results) ? data.results : []
+  } catch (err) {
+    searchError.value = 'Verbindingsfout: controleer of de backend actief is op poort 8000.'
+    searchResults.value = []
+  } finally {
+    searching.value = false
+  }
+}
+
+function clearSearch() {
+  searchResults.value = []
+  searchQuery.value = ''
+  hasSearched.value = false
+  searchError.value = ''
+}
+
+function selectSearchResult(item) {
+  trackUrl.value = item.permalink_url
+  fetchTrack()
+}
+
+function handleSearchPaste(event) {
+  const pastedText = (event.clipboardData || window.clipboardData)?.getData('text') || ''
+  const trimmed = pastedText.trim()
+  if (isSoundCloudUrl(trimmed)) {
+    event.preventDefault()
+    inputMode.value = 'url'
+    trackUrl.value = trimmed
+    fetchTrack()
   }
 }
 
@@ -474,6 +662,206 @@ function formatDuration(ms) {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* Modus-schakelaar */
+.mode-switch {
+  display: flex;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 4px;
+}
+.mode-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.mode-btn:hover:not(.active) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+.mode-btn.active {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.input-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Zoekresultaten */
+.search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  border-top: 1px solid #333333;
+  padding-top: 14px;
+}
+.search-results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.btn-text {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+.btn-text:hover {
+  color: var(--text);
+}
+
+.search-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.search-list::-webkit-scrollbar {
+  width: 6px;
+}
+.search-list::-webkit-scrollbar-thumb {
+  background: #3e3e3e;
+  border-radius: 4px;
+}
+
+.search-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #1e1e1e;
+  border: 1px solid #333333;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+  outline: none;
+}
+.search-item:hover {
+  background: #2a2a2a;
+  border-color: #4a4a4a;
+}
+.search-item:focus-visible {
+  border-color: var(--accent);
+}
+.search-item.is-selected {
+  border-color: var(--accent);
+  background: rgba(255, 85, 0, 0.08);
+}
+.search-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.search-thumb-placeholder {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  background: #2d2d2d;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+.search-details {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.search-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.search-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.search-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.search-artist {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.search-dot {
+  color: #555555;
+}
+.search-duration {
+  font-variant-numeric: tabular-nums;
+}
+.badge-drm {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+.search-action-btn {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: #2b2b2b;
+  border: 1px solid #3d3d3d;
+  padding: 4px 9px;
+  border-radius: 5px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.search-item:hover .search-action-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+.muted-info {
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 /* Labels */
