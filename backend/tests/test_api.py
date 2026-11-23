@@ -21,7 +21,7 @@ def client():
 
 
 def test_api_track_success(client):
-    """Verifieert dat /api/track succesvol metadata teruggeeft."""
+    """Verifieert dat /api/track succesvol metadata en formaten teruggeeft."""
     mock_info = {
         "title": "API Track",
         "artist": "API Artist",
@@ -32,10 +32,14 @@ def test_api_track_success(client):
         "media_type": "audio/mpeg",
         "is_artist_download": False,
         "stream_url": "https://api-v2.soundcloud.com/media/dummy",
+        "formats": [
+            {"id": "mp3", "label": "MP3 (Standaard)", "extension": ".mp3"},
+            {"id": "m4a", "label": "M4A (Hoge kwaliteit)", "extension": ".m4a"},
+        ],
     }
 
     with patch("backend.main._get_cached_client_id", return_value="dummy_client_id"), \
-         patch("backend.main.get_track_info", return_value=mock_info):
+         patch("backend.main.get_track_info", return_value=mock_info) as mock_get_info:
 
         response = client.get("/api/track?url=https://soundcloud.com/artist/api-track")
         assert response.status_code == 200
@@ -44,6 +48,12 @@ def test_api_track_success(client):
         assert data["artist"] == "API Artist"
         assert data["filename"] == "API Artist - API Track.mp3"
         assert data["media_type"] == "audio/mpeg"
+        assert "formats" in data
+        assert len(data["formats"]) == 2
+        assert data["formats"][0]["id"] == "mp3"
+        assert data["formats"][0]["label"] == "MP3 (Standaard)"
+        assert data["formats"][1]["id"] == "m4a"
+        mock_get_info.assert_called_once_with("https://soundcloud.com/artist/api-track", "dummy_client_id")
 
 
 def test_api_track_auto_refreshes_expired_client_id(client):
@@ -138,6 +148,44 @@ def test_api_download_success(client):
         tags = ID3(io.BytesIO(response.content))
         assert str(tags.get("TIT2")) == "Streamed Track"
         assert str(tags.get("TPE1")) == "Streamed Artist"
+
+
+def test_api_download_with_format_id(client):
+    """Verifieert dat /api/download de format_id parameter doorgeeft aan get_track_info."""
+    mock_info = {
+        "title": "Streamed M4A Track",
+        "artist": "Streamed Artist",
+        "filename": "Streamed Artist - Streamed M4A Track.m4a",
+        "media_type": "audio/mp4",
+        "extension": ".m4a",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_m4a",
+        "stream_protocol": "hls",
+    }
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info) as mock_get_info, \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/playlist.m3u8"), \
+         patch("backend.main.stream_audio", return_value=iter([b"fake_m4a_chunk"])):
+
+        response = client.get("/api/download?url=https://soundcloud.com/artist/m4a-track&format_id=m4a")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mp4"
+        assert 'attachment; filename="Streamed Artist - Streamed M4A Track.m4a"' in response.headers["content-disposition"]
+        mock_get_info.assert_called_once_with(
+            "https://soundcloud.com/artist/m4a-track",
+            "dummy_id",
+            format_id="m4a",
+        )
+
+
+def test_api_download_invalid_format_id(client):
+    """Verifieert dat een ongeldig format_id resulteert in HTTP 400."""
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", side_effect=SoundCloudError("Formaat 'flac' is niet beschikbaar")):
+
+        response = client.get("/api/download?url=https://soundcloud.com/artist/track&format_id=flac")
+        assert response.status_code == 400
+        assert "Formaat 'flac' is niet beschikbaar" in response.json()["detail"]
 
 
 def test_api_search_success(client):

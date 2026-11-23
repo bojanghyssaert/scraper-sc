@@ -9,7 +9,7 @@
         </svg>
         <span>SoundCloud Downloader</span>
       </div>
-      <p class="subtitle">Voer een SoundCloud-link in en download de track als MP3 of M4A</p>
+      <p class="subtitle">Voer een SoundCloud-link in en download de track in de gewenste kwaliteit</p>
     </header>
 
     <!-- ── Invoerkaart ── -->
@@ -22,6 +22,7 @@
           type="url"
           placeholder="https://soundcloud.com/artiest/track"
           @keyup.enter="fetchTrack"
+          @paste="handlePaste"
           :disabled="loading || downloading"
           autocomplete="off"
           spellcheck="false"
@@ -83,12 +84,31 @@
           <div class="track-meta">
             <div class="track-meta-header">
               <span class="track-label">TRACK PREVIEW</span>
-              <span v-if="track.is_artist_download" class="badge-artist-download">⭐ Officiële artist download</span>
+              <span v-if="selectedFormat?.id === 'original' || (track.is_artist_download && !selectedFormat)" class="badge-artist-download">
+                ⭐ Officiële artist download
+              </span>
             </div>
             <h2 class="track-title">{{ track.title }}</h2>
             <p class="track-artist">{{ track.artist }}</p>
             <p class="track-duration">{{ formatDuration(track.duration_ms) }}</p>
-            <p class="track-filename">📄 {{ track.filename }}</p>
+            <p class="track-filename">📄 {{ currentFilename }}</p>
+          </div>
+        </div>
+
+        <!-- Formaat- en kwaliteitskeuze (indien meerdere opties beschikbaar zijn) -->
+        <div v-if="track.formats && track.formats.length > 1" class="format-choice-block">
+          <label class="field-label" for="format-select">FORMAAT / KWALITEIT</label>
+          <div class="format-select-container">
+            <select
+              id="format-select"
+              v-model="selectedFormatId"
+              class="format-select"
+              :disabled="downloading"
+            >
+              <option v-for="fmt in track.formats" :key="fmt.id" :value="fmt.id">
+                {{ fmt.label }} ({{ fmt.extension }})
+              </option>
+            </select>
           </div>
         </div>
 
@@ -120,7 +140,7 @@
           :disabled="downloading"
         >
           <span v-if="downloading" class="spinner"></span>
-          <span v-else>⬇️ Download {{ trackFormatLabel }}</span>
+          <span v-else>⬇️ Download {{ downloadButtonFormat }}</span>
         </button>
 
         <p v-if="downloadError" class="status error">❌ {{ downloadError }}</p>
@@ -136,24 +156,43 @@ import AudioPlayer from './components/AudioPlayer.vue'
 
 const API = 'http://localhost:8000'
 
-const trackUrl        = ref('')
-const track           = ref(null)
-const loading         = ref(false)
-const fetchError      = ref('')
-const drmInfo         = ref(null)
-const downloading     = ref(false)
-const downloadError   = ref('')
-const downloadSuccess = ref('')
-const progress        = ref(0)
-const progressText    = ref('Wachten op download...')
-const audioPlayerRef  = ref(null)
+const trackUrl          = ref('')
+const track             = ref(null)
+const selectedFormatId  = ref('')
+const loading           = ref(false)
+const fetchError        = ref('')
+const drmInfo           = ref(null)
+const downloading       = ref(false)
+const downloadError     = ref('')
+const downloadSuccess   = ref('')
+const progress          = ref(0)
+const progressText      = ref('Wachten op download...')
+const audioPlayerRef    = ref(null)
 
 const previewAudioUrl = computed(() => {
   if (!track.value || !trackUrl.value.trim()) return ''
   return `${API}/api/preview?url=${encodeURIComponent(trackUrl.value.trim())}`
 })
 
-const trackFormatLabel = computed(() => {
+// Bepaal het huidig actieve formaatobject
+const selectedFormat = computed(() => {
+  if (!track.value?.formats?.length) return null
+  return track.value.formats.find(f => f.id === selectedFormatId.value) || track.value.formats[0]
+})
+
+// Dynamische bestandsnaam afgestemd op de gekozen formaatextensie
+const currentFilename = computed(() => {
+  if (!track.value) return ''
+  const baseName = track.value.filename.replace(/\.[a-zA-Z0-9]+$/, '')
+  const ext = selectedFormat.value?.extension || track.value.extension || '.mp3'
+  return `${baseName}${ext}`
+})
+
+// Label voor de downloadknop
+const downloadButtonFormat = computed(() => {
+  if (selectedFormat.value?.label) {
+    return selectedFormat.value.label
+  }
   const ext = (track.value?.extension || (track.value?.filename?.includes('.') ? '.' + track.value.filename.split('.').pop() : '')).toLowerCase()
   if (ext === '.m4a') return 'M4A'
   if (ext === '.ogg') return 'OGG (Opus)'
@@ -163,13 +202,47 @@ const trackFormatLabel = computed(() => {
   return 'MP3'
 })
 
-// ── Klembord ──
+// Hulpfunctie om te valideren of een string een geldige SoundCloud track-URL is
+function isSoundCloudUrl(url) {
+  if (!url || typeof url !== 'string') return false
+  const trimmed = url.trim()
+  try {
+    const parsed = new URL(
+      trimmed.startsWith('http://') || trimmed.startsWith('https://')
+        ? trimmed
+        : `https://${trimmed}`
+    )
+    const host = parsed.hostname.toLowerCase()
+    return (
+      host === 'soundcloud.com' ||
+      host.endsWith('.soundcloud.com')
+    ) && parsed.pathname.length > 1
+  } catch {
+    return false
+  }
+}
+
+// ── Plak-afhandeling (Ctrl+V / contextmenu) in het invoerveld ──
+function handlePaste(event) {
+  const pastedText = (event.clipboardData || window.clipboardData)?.getData('text') || ''
+  const trimmed = pastedText.trim()
+  if (isSoundCloudUrl(trimmed)) {
+    event.preventDefault()
+    trackUrl.value = trimmed
+    fetchTrack()
+  }
+}
+
+// ── Klembord knop ──
 async function pasteFromClipboard() {
   try {
     const text = await navigator.clipboard.readText()
-    trackUrl.value = text.trim()
+    const trimmed = text.trim()
+    trackUrl.value = trimmed
+    if (isSoundCloudUrl(trimmed)) {
+      fetchTrack()
+    }
   } catch {
-    // Fallback: niet ondersteund of geen toestemming
     alert('Klembord-toegang niet beschikbaar. Plak de URL handmatig.')
   }
 }
@@ -191,6 +264,7 @@ async function fetchTrack() {
   fetchError.value = ''
   drmInfo.value = null
   track.value = null
+  selectedFormatId.value = ''
   downloadError.value = ''
   downloadSuccess.value = ''
   progress.value = 0
@@ -215,7 +289,11 @@ async function fetchTrack() {
       }
       return
     }
-    track.value = await res.json()
+    const trackData = await res.json()
+    track.value = trackData
+    if (trackData.formats && trackData.formats.length > 0) {
+      selectedFormatId.value = trackData.formats[0].id
+    }
   } catch (err) {
     fetchError.value = 'Verbindingsfout: controleer of de backend actief is op poort 8000.'
   } finally {
@@ -233,9 +311,10 @@ async function downloadTrack() {
   progressText.value = 'Verbinding maken...'
 
   const targetUrl = trackUrl.value.trim()
+  const formatQuery = selectedFormatId.value ? `&format_id=${encodeURIComponent(selectedFormatId.value)}` : ''
 
   try {
-    const res = await fetch(`${API}/api/download?url=${encodeURIComponent(targetUrl)}`)
+    const res = await fetch(`${API}/api/download?url=${encodeURIComponent(targetUrl)}${formatQuery}`)
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
       const detailMsg = typeof data.detail === 'string' ? data.detail : ''
@@ -256,9 +335,8 @@ async function downloadTrack() {
     const totalBytes = contentLength ? parseInt(contentLength, 10) : 0
     const reader = res.body.getReader()
 
-    // Probeer native File System Access API (Windows Verkenner dialoog)
-    const useFSA = typeof window.showSaveFilePicker === 'function'
-    const ext = (track.value.extension || (track.value.filename.includes('.') ? '.' + track.value.filename.split('.').pop() : '.mp3')).toLowerCase()
+    // Bepaal de bestandsextensie en het juiste MIME-type voor window.showSaveFilePicker
+    const ext = (selectedFormat.value?.extension || track.value.extension || (track.value.filename.includes('.') ? '.' + track.value.filename.split('.').pop() : '.mp3')).toLowerCase()
     let pickerTypes = [{ description: 'MP3-audiobestand', accept: { 'audio/mpeg': ['.mp3'] } }]
     if (ext === '.m4a') {
       pickerTypes = [{ description: 'M4A-audiobestand', accept: { 'audio/mp4': ['.m4a'] } }]
@@ -272,6 +350,7 @@ async function downloadTrack() {
       pickerTypes = [{ description: 'AIFF-audiobestand', accept: { 'audio/aiff': ['.aiff', '.aif'] } }]
     }
 
+    const useFSA = typeof window.showSaveFilePicker === 'function'
     let fileHandle = null
     let writable = null
     const chunks = []
@@ -279,7 +358,7 @@ async function downloadTrack() {
     if (useFSA) {
       try {
         fileHandle = await window.showSaveFilePicker({
-          suggestedName: track.value.filename,
+          suggestedName: currentFilename.value,
           types: pickerTypes,
         })
         writable = await fileHandle.createWritable()
@@ -289,7 +368,7 @@ async function downloadTrack() {
           progressText.value = 'Download geannuleerd.'
           return
         }
-        // FSA niet ondersteund of mislukt → fallback
+        // FSA niet ondersteund of toegang geweigerd → fallback
         fileHandle = null
       }
     }
@@ -325,10 +404,10 @@ async function downloadTrack() {
       await writable.close()
       progress.value = 100
       progressText.value = 'Opgeslagen!'
-      downloadSuccess.value = `'${track.value.title}' is succesvol opgeslagen!`
+      downloadSuccess.value = `'${currentFilename.value}' is succesvol opgeslagen!`
     } else {
       // Fallback: <a download> in de browser
-      const mime = track.value.media_type || (
+      const mime = selectedFormat.value?.media_type || track.value.media_type || (
         ext === '.m4a' ? 'audio/mp4' :
         ext === '.ogg' ? 'audio/ogg' :
         ext === '.wav' ? 'audio/wav' :
@@ -339,14 +418,14 @@ async function downloadTrack() {
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
       a.href     = url
-      a.download = track.value.filename
+      a.download = currentFilename.value
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
       progress.value = 100
       progressText.value = 'Download klaar!'
-      downloadSuccess.value = `'${track.value.title}' is succesvol gedownload!`
+      downloadSuccess.value = `'${currentFilename.value}' is succesvol gedownload!`
     }
   } catch (err) {
     downloadError.value = `Onverwachte fout: ${err.message}`
@@ -579,8 +658,55 @@ function formatDuration(ms) {
 .track-duration { color: var(--muted); font-size: .8rem; }
 .track-filename { color: var(--muted); font-size: .78rem; word-break: break-all; }
 
+/* Formaatkeuze */
+.format-choice-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.format-select-container {
+  position: relative;
+  display: flex;
+  width: 100%;
+}
+.format-select {
+  width: 100%;
+  background: var(--input-bg);
+  border: 1.5px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 0.9rem;
+  font-weight: 500;
+  padding: 9px 36px 9px 13px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%23A0A0A0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  transition: border-color .15s;
+}
+.format-select:focus {
+  border-color: var(--accent);
+}
+.format-select:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+.format-select option {
+  background: #242424;
+  color: #fff;
+  padding: 8px;
+}
+
 /* Player */
-.player-block { display: flex; flex-direction: column; gap: 8px; }
+.player-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 
 /* Progress */
 .progress-block { display: flex; flex-direction: column; gap: 8px; }
