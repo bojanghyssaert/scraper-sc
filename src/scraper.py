@@ -2,12 +2,27 @@ import requests
 import re
 import os
 import tkinter as tk
+from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 import threading
 
+# Kleurenpalet (Moderne SoundCloud-stijl)
+BG_COLOR = "#181818"
+CARD_BG = "#242424"
+INPUT_BG = "#2D2D2D"
+TEXT_COLOR = "#F5F5F5"
+TEXT_MUTED = "#A0A0A0"
+ACCENT_COLOR = "#FF5500"
+ACCENT_HOVER = "#FF6A22"
+BTN_SECONDARY = "#333333"
+BTN_SECONDARY_HOVER = "#444444"
+STATUS_INFO = "#FF5500"
+STATUS_SUCCESS = "#00E676"
+STATUS_ERROR = "#FF5252"
 
-def update_status(text, fg="blue"):
+
+def update_status(text, fg=STATUS_INFO):
     venster.after(0, lambda: status_label.config(text=text, fg=fg))
 
 
@@ -23,12 +38,27 @@ def show_ui_message(kind, title, message):
 
 
 def set_download_state(enabled):
-    state = "normal" if enabled else "disabled"
-    venster.after(0, lambda: download_knop.config(state=state))
+    def _update():
+        if enabled:
+            download_knop.config(state="normal", bg=ACCENT_COLOR, cursor="hand2")
+            plak_knop.config(state="normal", cursor="hand2")
+        else:
+            download_knop.config(state="disabled", bg="#555555", cursor="watch")
+            plak_knop.config(state="disabled", cursor="watch")
+    venster.after(0, _update)
 
 
 def clear_input():
     venster.after(0, lambda: invoerveld.delete(0, tk.END))
+
+
+def paste_from_clipboard():
+    try:
+        content = venster.clipboard_get().strip()
+        invoerveld.delete(0, tk.END)
+        invoerveld.insert(0, content)
+    except tk.TclError:
+        pass
 
 
 def get_client_id():
@@ -198,19 +228,118 @@ if __name__ == "__main__":
         print(f"client id succesvol gevonden: {applicatie_client_id}")
 
         venster = tk.Tk()
-        venster.title("SoundCloud to mp3")
-        venster.geometry("450x200")
+        venster.title("SoundCloud Downloader")
+        venster.geometry("580x380")
+        venster.minsize(540, 360)
+        venster.configure(bg=BG_COLOR)
 
-        uitleg_label = tk.Label(venster, text="Plak hier je SoundCloud link: ")
-        uitleg_label.pack(pady=10)
+        # Header sectie
+        header_frame = tk.Frame(venster, bg=BG_COLOR)
+        header_frame.pack(fill="x", padx=30, pady=(25, 15))
 
-        invoerveld = tk.Entry(venster, width=50)
-        invoerveld.pack(pady=5)
+        titel_label = tk.Label(
+            header_frame,
+            text="🎵 SoundCloud Downloader",
+            font=("Segoe UI", 16, "bold"),
+            fg=TEXT_COLOR,
+            bg=BG_COLOR
+        )
+        titel_label.pack(anchor="w")
 
-        download_knop = tk.Button(venster, text="Download MP3", command=start_download)
-        download_knop.pack(pady=20)
+        subtitel_label = tk.Label(
+            header_frame,
+            text="Plak een SoundCloud link om de track direct als MP3 te downloaden",
+            font=("Segoe UI", 9),
+            fg=TEXT_MUTED,
+            bg=BG_COLOR
+        )
+        subtitel_label.pack(anchor="w", pady=(3, 0))
 
-        status_label = tk.Label(venster, text="", fg="blue")
-        status_label.pack(pady=5)
+        # Invoerkaart
+        card_frame = tk.Frame(venster, bg=CARD_BG, padx=20, pady=20, relief="flat")
+        card_frame.pack(fill="x", padx=30, pady=10)
+
+        invoer_label = tk.Label(
+            card_frame,
+            text="SoundCloud Track URL",
+            font=("Segoe UI", 10, "bold"),
+            fg=TEXT_COLOR,
+            bg=CARD_BG
+        )
+        invoer_label.pack(anchor="w", pady=(0, 8))
+
+        invoer_rij = tk.Frame(card_frame, bg=CARD_BG)
+        invoer_rij.pack(fill="x")
+
+        invoerveld = tk.Entry(
+            invoer_rij,
+            font=("Segoe UI", 10),
+            bg=INPUT_BG,
+            fg=TEXT_COLOR,
+            insertbackground=TEXT_COLOR,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#3D3D3D",
+            highlightcolor=ACCENT_COLOR
+        )
+        invoerveld.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
+
+        plak_knop = tk.Button(
+            invoer_rij,
+            text="📋 Plakken",
+            font=("Segoe UI", 9, "bold"),
+            bg=BTN_SECONDARY,
+            fg=TEXT_COLOR,
+            activebackground=BTN_SECONDARY_HOVER,
+            activeforeground=TEXT_COLOR,
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=4,
+            command=paste_from_clipboard
+        )
+        plak_knop.pack(side="right")
+
+        plak_knop.bind("<Enter>", lambda e: plak_knop.config(bg=BTN_SECONDARY_HOVER))
+        plak_knop.bind("<Leave>", lambda e: plak_knop.config(bg=BTN_SECONDARY))
+
+        # Actieknoppen & Status sectie
+        actie_frame = tk.Frame(venster, bg=BG_COLOR)
+        actie_frame.pack(fill="x", padx=30, pady=15)
+
+        download_knop = tk.Button(
+            actie_frame,
+            text="Download MP3",
+            font=("Segoe UI", 11, "bold"),
+            bg=ACCENT_COLOR,
+            fg="#FFFFFF",
+            activebackground="#E04A00",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            cursor="hand2",
+            pady=8,
+            command=start_download
+        )
+        download_knop.pack(fill="x")
+
+        def on_download_hover(e):
+            if download_knop["state"] == "normal":
+                download_knop.config(bg=ACCENT_HOVER)
+
+        def on_download_leave(e):
+            if download_knop["state"] == "normal":
+                download_knop.config(bg=ACCENT_COLOR)
+
+        download_knop.bind("<Enter>", on_download_hover)
+        download_knop.bind("<Leave>", on_download_leave)
+
+        status_label = tk.Label(
+            actie_frame,
+            text="",
+            font=("Segoe UI", 9),
+            bg=BG_COLOR,
+            fg=STATUS_INFO
+        )
+        status_label.pack(pady=(12, 0))
 
         venster.mainloop()
