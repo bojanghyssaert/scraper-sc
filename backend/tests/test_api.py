@@ -299,3 +299,98 @@ def test_api_preview_stream_error(client):
         response = client.get("/api/preview?url=https://soundcloud.com/artist/stream-error")
         assert response.status_code == 502
         assert "Stream netwerkfout" in response.json()["detail"]
+
+
+def test_api_track_playlist_success(client):
+    """Verifieert dat /api/track playlist-metadata en tracks retourneert bij kind=playlist."""
+    mock_playlist_info = {
+        "type": "playlist",
+        "title": "Summer Vibes Set",
+        "artist": "DJ Chill",
+        "artwork_url": "https://i1.sndcdn.com/artworks-playlist-t500x500.jpg",
+        "tracks": [
+            {
+                "url": "https://soundcloud.com/dj-chill/track-1",
+                "title": "Track 1",
+                "artist": "DJ Chill",
+                "duration_ms": 180000,
+                "downloadable": True,
+                "is_drm": False,
+            },
+            {
+                "url": "https://soundcloud.com/dj-chill/track-2",
+                "title": "Track 2",
+                "artist": "DJ Chill",
+                "duration_ms": 200000,
+                "downloadable": False,
+                "is_drm": True,
+            },
+        ],
+    }
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_cid"), \
+         patch("backend.main.get_track_info", return_value=mock_playlist_info):
+
+        response = client.get("/api/track?url=https://soundcloud.com/dj-chill/sets/summer-vibes")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "playlist"
+        assert data["title"] == "Summer Vibes Set"
+        assert data["artist"] == "DJ Chill"
+        assert len(data["tracks"]) == 2
+        assert data["tracks"][0]["title"] == "Track 1"
+        assert data["tracks"][0]["is_drm"] is False
+        assert data["tracks"][1]["is_drm"] is True
+
+
+def test_api_download_zip_success(client):
+    """Verifieert dat POST /api/download-zip een ZIP-bestand streamt met Content-Disposition."""
+    import zipfile
+    import io
+
+    # Bouw een dummy zip
+    dummy_zip_buf = io.BytesIO()
+    with zipfile.ZipFile(dummy_zip_buf, "w") as zf:
+        zf.writestr("Track 1.mp3", b"audio_content")
+    dummy_zip_bytes = dummy_zip_buf.getvalue()
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_cid"), \
+         patch("backend.main.download_tracks_as_zip", return_value=dummy_zip_bytes):
+
+        payload = {
+            "playlist_title": "Summer Vibes Set",
+            "track_urls": [
+                "https://soundcloud.com/dj-chill/track-1",
+            ],
+        }
+        response = client.post("/api/download-zip", json=payload)
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        assert 'attachment; filename="Summer Vibes Set.zip"' in response.headers["content-disposition"]
+        assert response.headers["content-length"] == str(len(dummy_zip_bytes))
+        assert response.content == dummy_zip_bytes
+
+
+def test_api_download_zip_empty_urls(client):
+    """Verifieert dat POST /api/download-zip 400 retourneert bij een lege track_urls lijst."""
+    payload = {
+        "playlist_title": "Empty Set",
+        "track_urls": [],
+    }
+    response = client.post("/api/download-zip", json=payload)
+    assert response.status_code == 400
+    assert "Geen tracks geselecteerd" in response.json()["detail"]
+
+
+def test_api_download_zip_error(client):
+    """Verifieert dat POST /api/download-zip 400 retourneert als download_tracks_as_zip faalt."""
+    with patch("backend.main._get_cached_client_id", return_value="dummy_cid"), \
+         patch("backend.main.download_tracks_as_zip", side_effect=SoundCloudError("Fout bij downloaden van tracks")):
+
+        payload = {
+            "playlist_title": "Faulty Set",
+            "track_urls": ["https://soundcloud.com/faulty/1"],
+        }
+        response = client.post("/api/download-zip", json=payload)
+        assert response.status_code == 400
+        assert "Fout bij downloaden" in response.json()["detail"]
