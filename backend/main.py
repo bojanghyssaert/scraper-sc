@@ -234,13 +234,17 @@ def preview_track(url: str = Query(..., description="Publieke SoundCloud track-U
 
 
 @app.get("/api/search")
-def search(q: str = Query(..., description="Zoekopdracht voor SoundCloud tracks")):
+def search(
+    q: str = Query(..., description="Zoekopdracht voor SoundCloud tracks"),
+    limit: int = Query(8, description="Aantal zoekresultaten (standaard 8)", ge=1, le=50),
+):
     """
-    Zoekt tracks op SoundCloud op basis van een zoekopdracht.
+    Zoekt tracks op SoundCloud op basis van artiest of titel.
+    Geeft een lijst terug van tracks met title, artist, artwork_url, duration_ms, permalink_url en is_drm.
     """
     client_id = _get_cached_client_id()
     try:
-        results = search_tracks(q, client_id)
+        results = search_tracks(q, client_id, limit=limit)
         return {"results": results}
     except SoundCloudError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
