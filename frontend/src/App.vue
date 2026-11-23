@@ -9,7 +9,7 @@
         </svg>
         <span>SoundCloud Downloader</span>
       </div>
-      <p class="subtitle">Voer een SoundCloud-link in en download de track als MP3</p>
+      <p class="subtitle">Voer een SoundCloud-link in en download de track als MP3 of M4A</p>
     </header>
 
     <!-- ── Invoerkaart ── -->
@@ -103,6 +103,9 @@ const progress      = ref(0)
 const progressText  = ref('Wachten op download...')
 
 const trackFormatLabel = computed(() => {
+  if (track.value?.filename?.toLowerCase().endsWith('.m4a') || track.value?.extension === '.m4a') {
+    return 'M4A'
+  }
   if (track.value?.filename?.toLowerCase().endsWith('.ogg') || track.value?.extension === '.ogg') {
     return 'OGG (Opus)'
   }
@@ -169,10 +172,13 @@ async function downloadTrack() {
 
     // Probeer native File System Access API (Windows Verkenner dialoog)
     const useFSA = typeof window.showSaveFilePicker === 'function'
-    const isOgg = track.value.filename.toLowerCase().endsWith('.ogg') || track.value.extension === '.ogg'
-    const pickerTypes = isOgg
-      ? [{ description: 'OGG-audiobestand', accept: { 'audio/ogg': ['.ogg'] } }]
-      : [{ description: 'MP3-audiobestand', accept: { 'audio/mpeg': ['.mp3'] } }]
+    const ext = (track.value.extension || (track.value.filename.includes('.') ? '.' + track.value.filename.split('.').pop() : '.mp3')).toLowerCase()
+    let pickerTypes = [{ description: 'MP3-audiobestand', accept: { 'audio/mpeg': ['.mp3'] } }]
+    if (ext === '.m4a') {
+      pickerTypes = [{ description: 'M4A-audiobestand', accept: { 'audio/mp4': ['.m4a'] } }]
+    } else if (ext === '.ogg') {
+      pickerTypes = [{ description: 'OGG-audiobestand', accept: { 'audio/ogg': ['.ogg'] } }]
+    }
 
     let fileHandle = null
     let writable = null
@@ -230,7 +236,7 @@ async function downloadTrack() {
       downloadSuccess.value = `'${track.value.title}' is succesvol opgeslagen!`
     } else {
       // Fallback: <a download> in de browser
-      const mime = track.value.media_type || (isOgg ? 'audio/ogg' : 'audio/mpeg')
+      const mime = track.value.media_type || (ext === '.m4a' ? 'audio/mp4' : (ext === '.ogg' ? 'audio/ogg' : 'audio/mpeg'))
       const blob = new Blob(chunks, { type: mime })
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
