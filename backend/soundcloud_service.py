@@ -7,6 +7,7 @@ track-metadata en de download-URL — zonder enige GUI-afhankelijkheid.
 
 import re
 import urllib.parse
+from typing import Callable
 import requests
 
 HEADERS = {
@@ -18,6 +19,10 @@ HEADERS = {
 }
 TIMEOUT = 10
 
+_cached_client_id: str | None = None
+_on_client_id_reset_callbacks: list[Callable[[], None]] = []
+_on_client_id_updated_callbacks: list[Callable[[str], None]] = []
+
 
 class SoundCloudError(Exception):
     """Domein-specifieke fout voor SoundCloud-bewerkingen."""
@@ -25,6 +30,61 @@ class SoundCloudError(Exception):
 
 class SoundCloudDRMError(SoundCloudError):
     """Domein-specifieke fout voor DRM-beveiligde SoundCloud tracks."""
+
+
+def register_reset_callback(cb: Callable[[], None]) -> None:
+    """Registreert een callback die wordt aangeroepen wanneer de client_id wordt gereset."""
+    if cb not in _on_client_id_reset_callbacks:
+        _on_client_id_reset_callbacks.append(cb)
+
+
+def register_update_callback(cb: Callable[[str], None]) -> None:
+    """Registreert een callback die wordt aangeroepen wanneer een nieuwe client_id is ingesteld."""
+    if cb not in _on_client_id_updated_callbacks:
+        _on_client_id_updated_callbacks.append(cb)
+
+
+def reset_client_id() -> None:
+    """
+    Maakt de gecachete client_id ongeldig zodat bij een volgend verzoek
+    een nieuwe client_id wordt opgehaald.
+    """
+    global _cached_client_id
+    _cached_client_id = None
+    for cb in list(_on_client_id_reset_callbacks):
+        try:
+            cb()
+        except Exception:
+            pass
+
+
+def _set_cached_client_id(cid: str | None) -> None:
+    """Stelt de gecachete client_id in en verwittigt geregistreerde callbacks."""
+    global _cached_client_id
+    _cached_client_id = cid
+    if cid is not None:
+        for cb in list(_on_client_id_updated_callbacks):
+            try:
+                cb(cid)
+            except Exception:
+                pass
+
+
+def get_cached_client_id() -> str:
+    """
+    Haalt de gecachete client_id op of vraagt een nieuwe op als deze nog niet gecached is.
+
+    Returns:
+        De 32-tekens client_id string.
+
+    Raises:
+        SoundCloudError: Als het ophalen van een client_id mislukt.
+    """
+    global _cached_client_id
+    if not _cached_client_id:
+        fresh_id = get_client_id()
+        _set_cached_client_id(fresh_id)
+    return _cached_client_id
 
 
 def get_client_id() -> str:
@@ -67,25 +127,78 @@ def get_client_id() -> str:
     )
 
 
-def get_track_info(track_url: str, client_id: str) -> dict:
+def _fetch_with_retry(
+    url: str,
+    params: dict | None = None,
+    client_id: str | None = None,
+    timeout: int = TIMEOUT,
+) -> tuple[requests.Response, str]:
     """
-    Haalt track-metadata op via de SoundCloud /resolve API.
+    Voert een GET-verzoek uit met een client_id.
+    Als SoundCloud een HTTP 401 of 403 retourneert, wordt reset_client_id()
+    aangeroepen, een verse client_id opgehaald via get_client_id(),
+    en het verzoek eenmalig herhaald.
 
     Returns:
-        Dict met: title, artist, artwork_url, duration_ms, filename, stream_url
+        tuple[requests.Response, str]: (respons, gebruikte_client_id)
+    """
+    active_client_id = client_id or get_cached_client_id()
+    req_params = dict(params or {}) if params is not None else None
+
+    # Bouw req_url en req_params op
+    if "client_id=" in url:
+        req_url = re.sub(r"([?&]client_id=)[^&]+", rf"\g<1>{active_client_id}", url)
+    elif req_params is not None:
+        req_url = url
+        req_params["client_id"] = active_client_id
+    else:
+        req_url = url
+        req_params = {"client_id": active_client_id}
+
+    try:
+        resp = requests.get(req_url, params=req_params, headers=HEADERS, timeout=timeout)
+    except requests.RequestException as exc:
+        raise SoundCloudError(f"Netwerkfout bij SoundCloud-verzoek: {exc}") from exc
+
+    # Bij 401 of 403: maak cache ongeldig, haal verse client_id op en herhaal één keer
+    if resp.status_code in (401, 403):
+        reset_client_id()
+        active_client_id = get_client_id()
+        _set_cached_client_id(active_client_id)
+
+        if "client_id=" in url:
+            req_url = re.sub(r"([?&]client_id=)[^&]+", rf"\g<1>{active_client_id}", url)
+        else:
+            req_params["client_id"] = active_client_id
+
+        try:
+            resp = requests.get(req_url, params=req_params, headers=HEADERS, timeout=timeout)
+        except requests.RequestException as exc:
+            raise SoundCloudError(f"Netwerkfout na vernieuwen client_id: {exc}") from exc
+
+    return resp, active_client_id
+
+
+def get_track_info(track_url: str, client_id: str | None = None) -> dict:
+    """
+    Haalt track-metadata op via de SoundCloud /resolve API.
+    Ververst automatisch de client_id als SoundCloud een HTTP 401 of 403 teruggeeft.
+
+    Returns:
+        Dict met: title, artist, artwork_url, duration_ms, filename, stream_url, etc.
 
     Raises:
         SoundCloudError: Bij netwerk- of API-fouten.
     """
-    resolve_url = (
-        f"https://api-v2.soundcloud.com/resolve"
-        f"?url={track_url}&client_id={client_id}"
-    )
-    try:
-        resp = requests.get(resolve_url, headers=HEADERS, timeout=TIMEOUT)
-    except requests.RequestException as exc:
-        raise SoundCloudError(f"Netwerkfout bij ophalen track: {exc}") from exc
+    active_client_id = client_id or get_cached_client_id()
+    resolve_url = f"https://api-v2.soundcloud.com/resolve?url={track_url}&client_id={active_client_id}"
 
+    resp, active_client_id = _fetch_with_retry(resolve_url, client_id=active_client_id)
+
+    if resp.status_code in (401, 403):
+        raise SoundCloudError(
+            f"SoundCloud API autorisatiefout ({resp.status_code}): client_id ongeldig of verlopen."
+        )
     if resp.status_code == 404:
         raise SoundCloudError("Track niet gevonden. Controleer de URL.")
     if resp.status_code != 200:
@@ -121,13 +234,13 @@ def get_track_info(track_url: str, client_id: str) -> dict:
     if downloadable and has_downloads_left and track_id:
         dl_api_url = (
             f"https://api-v2.soundcloud.com/tracks/{track_id}/download"
-            f"?client_id={client_id}"
+            f"?client_id={active_client_id}"
         )
         try:
-            dl_resp = requests.get(dl_api_url, headers=HEADERS, timeout=TIMEOUT)
+            dl_resp, active_client_id = _fetch_with_retry(dl_api_url, client_id=active_client_id)
             if dl_resp.status_code == 200:
                 direct_url = dl_resp.json().get("redirectUri")
-        except requests.RequestException:
+        except Exception:
             direct_url = None
 
     transcodings = data.get("media", {}).get("transcodings", [])
@@ -229,10 +342,14 @@ def get_track_info(track_url: str, client_id: str) -> dict:
         # Valideer kandidaten in prioriteitsvolgorde; sla streams over die 404 geven bij SoundCloud
         for cand in candidates:
             try:
-                params = {"client_id": client_id}
+                params = {}
                 if track_authorization:
                     params["track_authorization"] = track_authorization
-                chk = requests.get(cand["stream_url"], params=params, headers=HEADERS, timeout=TIMEOUT)
+                chk, active_client_id = _fetch_with_retry(
+                    cand["stream_url"],
+                    params=params,
+                    client_id=active_client_id,
+                )
                 if chk.status_code == 200 and chk.json().get("url"):
                     stream_url = cand["stream_url"]
                     stream_protocol = cand["stream_protocol"]
@@ -302,7 +419,7 @@ def get_track_info(track_url: str, client_id: str) -> dict:
 
 def get_download_url(
     stream_url: str,
-    client_id: str,
+    client_id: str | None = None,
     track_authorization: str | None = None,
     is_direct: bool = False,
 ) -> str:
@@ -310,6 +427,8 @@ def get_download_url(
     Wisselt de stream-URL in voor de directe CDN-downloadlink.
     Als stream_url al een directe download-URL is (bijv. van een officiële artist download),
     wordt deze direct geretourneerd.
+
+    Ververst automatisch de client_id als SoundCloud een HTTP 401 of 403 teruggeeft.
 
     Returns:
         De CDN-URL van het audiobestand of HLS m3u8 playlist.
@@ -320,16 +439,28 @@ def get_download_url(
     if is_direct or not stream_url.startswith("https://api-v2.soundcloud.com/media/"):
         return stream_url
 
-    params = {"client_id": client_id}
+    params = {}
     if track_authorization:
         params["track_authorization"] = track_authorization
 
+    resp, _ = _fetch_with_retry(
+        stream_url,
+        params=params,
+        client_id=client_id,
+    )
+
+    if resp.status_code in (401, 403):
+        raise SoundCloudError(
+            f"SoundCloud API autorisatiefout ({resp.status_code}) bij downloadlink: client_id ongeldig of verlopen."
+        )
+
+    if resp.status_code != 200:
+        raise SoundCloudError(
+            f"Fout bij ophalen downloadlink: HTTP {resp.status_code}."
+        )
+
     try:
-        resp = requests.get(stream_url, params=params, headers=HEADERS, timeout=TIMEOUT)
-        resp.raise_for_status()
         download_url = resp.json().get("url")
-    except requests.RequestException as exc:
-        raise SoundCloudError(f"Fout bij ophalen downloadlink: {exc}") from exc
     except ValueError as exc:
         raise SoundCloudError("Ongeldig antwoord bij downloadlink-aanvraag.") from exc
 
@@ -337,6 +468,49 @@ def get_download_url(
         raise SoundCloudError("Geen geldige downloadlocatie ontvangen van SoundCloud.")
 
     return download_url
+
+
+def search_tracks(
+    query: str,
+    client_id: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Zoekt tracks op SoundCloud via de /search/tracks API.
+    Ververst automatisch de client_id als SoundCloud een HTTP 401 of 403 teruggeeft.
+
+    Returns:
+        Lijst met track dictionaries.
+
+    Raises:
+        SoundCloudError: Bij netwerk- of API-fouten.
+    """
+    if not query or not query.strip():
+        return []
+
+    resp, _ = _fetch_with_retry(
+        "https://api-v2.soundcloud.com/search/tracks",
+        params={"q": query.strip(), "limit": str(limit)},
+        client_id=client_id,
+    )
+
+    if resp.status_code in (401, 403):
+        raise SoundCloudError(
+            f"SoundCloud API autorisatiefout ({resp.status_code}) bij zoeken: client_id ongeldig of verlopen."
+        )
+
+    if resp.status_code != 200:
+        raise SoundCloudError(f"SoundCloud zoek-API gaf foutcode {resp.status_code} terug.")
+
+    try:
+        data = resp.json()
+        return data.get("collection", [])
+    except ValueError as exc:
+        raise SoundCloudError("Ongeldig JSON-antwoord van SoundCloud zoek-API.") from exc
+
+
+# Alias voor brede compatibiliteit
+search = search_tracks
 
 
 def stream_audio(download_url: str):
