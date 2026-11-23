@@ -6,6 +6,19 @@ Educatief full-stack project dat SoundCloud-tracks als MP3 downloadt via API rev
 
 ---
 
+## ⚡ Snelstarten op Windows (Één-klik)
+
+Voor Windows is er een gebruiksvriendelijk één-klik start- en stopmechanisme beschikbaar:
+
+* **🚀 Starten (`scraper-start.bat`):**
+  Dubbelklik op `scraper-start.bat` in Windows Verkenner (of voer `.\scraper-start.ps1` uit in PowerShell). Dit start automatisch zowel de **FastAPI-backend** (poort 8000) als de **Vue-frontend** (poort 5173) in hetzelfde venster en opent direct `http://localhost:5173` in je standaardbrowser zodra alles gereed is.
+* **🛑 Normaal afsluiten:**
+  Druk simpelweg op <kbd>ENTER</kbd> (of <kbd>Ctrl+C</kbd>) in het terminalvenster. Het script beëindigt netjes beide procesbomen inclusief achterliggende child-processen.
+* **🚨 Noodstop (`scraper-stop.bat`):**
+  Heb je het terminalvenster per ongeluk gesloten via het kruisje (`[X]`)? Dubbelklik op `scraper-stop.bat` om eventuele achtergebleven achtergrondprocessen op poort 8000 en 5173 op te sporen en geforceerd af te sluiten.
+
+---
+
 ## ✨ Functionaliteiten
 
 | Onderdeel | Functionaliteit |
@@ -46,6 +59,9 @@ soundcloud-scraper/
 │   └── vite.config.js
 ├── src/
 │   └── scraper.py               # Originele Tkinter GUI-versie (standalone)
+├── scraper-start.bat            # Windows Verkenner dubbelklik-starter
+├── scraper-start.ps1            # Hoofdscript voor starten, browser openen en afsluiten
+├── scraper-stop.bat             # Noodstop voor processen op poort 8000 en 5173
 ├── requirements.txt             # Python-afhankelijkheden voor de backend
 └── README.md
 ```
