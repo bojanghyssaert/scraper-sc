@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 try:
     from backend.soundcloud_service import (
         SoundCloudError,
+        SoundCloudDRMError,
         get_client_id,
         get_download_url,
         get_track_info,
@@ -24,6 +25,7 @@ try:
 except ImportError:
     from soundcloud_service import (
         SoundCloudError,
+        SoundCloudDRMError,
         get_client_id,
         get_download_url,
         get_track_info,
@@ -62,15 +64,20 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
     Geeft metadata van een SoundCloud-track terug als JSON.
 
     Response body:
-        title        (str)
-        artist       (str)
-        artwork_url  (str)
-        duration_ms  (int)
-        filename     (str)  — opgeschoonde MP3-bestandsnaam
+        title               (str)
+        artist              (str)
+        artwork_url         (str)
+        duration_ms         (int)
+        filename            (str)  — opgeschoonde MP3- of audiobestandsnaam
+        extension           (str)
+        media_type          (str)
+        is_artist_download  (bool)
     """
     client_id = _get_cached_client_id()
     try:
         info = get_track_info(url, client_id)
+    except SoundCloudDRMError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except SoundCloudError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -82,6 +89,7 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
         "filename": info["filename"],
         "extension": info.get("extension", ".mp3"),
         "media_type": info.get("media_type", "audio/mpeg"),
+        "is_artist_download": info.get("is_artist_download", False),
     }
 
 
@@ -94,11 +102,17 @@ def download_track(url: str = Query(..., description="Publieke SoundCloud track-
 
     try:
         info = get_track_info(url, client_id)
-        download_url = get_download_url(
-            info["stream_url"],
-            client_id,
-            info.get("track_authorization")
-        )
+        if info.get("direct_url"):
+            download_url = info["direct_url"]
+        else:
+            download_url = get_download_url(
+                info["stream_url"],
+                client_id,
+                info.get("track_authorization"),
+                is_direct=info.get("stream_protocol") == "direct",
+            )
+    except SoundCloudDRMError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except SoundCloudError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -109,7 +123,7 @@ def download_track(url: str = Query(..., description="Publieke SoundCloud track-
     content_length = None
     if not is_hls:
         try:
-            head_resp = req_lib.head(download_url, headers=HEADERS, timeout=TIMEOUT)
+            head_resp = req_lib.head(download_url, headers=HEADERS, timeout=TIMEOUT, allow_redirects=True)
             cl = head_resp.headers.get("content-length")
             if cl and cl.isdigit():
                 content_length = int(cl)

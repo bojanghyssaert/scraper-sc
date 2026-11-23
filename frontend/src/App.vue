@@ -34,7 +34,37 @@
           <span v-else>Zoek track</span>
         </button>
       </div>
+
+      <!-- Algemene foutmelding (alleen bij niet-DRM fouten) -->
       <p v-if="fetchError" class="status error">❌ {{ fetchError }}</p>
+
+      <!-- Rustige informatiebanner voor DRM-beveiligde tracks -->
+      <transition name="fade">
+        <div v-if="drmInfo" class="drm-banner">
+          <div class="drm-header">
+            <span class="drm-icon">ℹ️</span>
+            <div class="drm-body">
+              <h3 class="drm-title">DRM-beveiligd nummer</h3>
+              <p class="drm-message">{{ drmInfo.message }}</p>
+            </div>
+          </div>
+          <div class="drm-actions">
+            <a
+              :href="drmInfo.url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="btn btn-secondary drm-btn"
+            >
+              <span>Open op SoundCloud</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <line x1="10" y1="14" x2="21" y2="3"></line>
+              </svg>
+            </a>
+          </div>
+        </div>
+      </transition>
     </section>
 
     <!-- ── Track Preview ── -->
@@ -51,7 +81,10 @@
           <div v-else class="artwork-placeholder">🎵</div>
 
           <div class="track-meta">
-            <span class="track-label">TRACK PREVIEW</span>
+            <div class="track-meta-header">
+              <span class="track-label">TRACK PREVIEW</span>
+              <span v-if="track.is_artist_download" class="badge-artist-download">⭐ Officiële artist download</span>
+            </div>
             <h2 class="track-title">{{ track.title }}</h2>
             <p class="track-artist">{{ track.artist }}</p>
             <p class="track-duration">{{ formatDuration(track.duration_ms) }}</p>
@@ -92,23 +125,24 @@ import { ref, computed } from 'vue'
 
 const API = 'http://localhost:8000'
 
-const trackUrl      = ref('')
-const track         = ref(null)
-const loading       = ref(false)
-const fetchError    = ref('')
-const downloading   = ref(false)
-const downloadError = ref('')
+const trackUrl        = ref('')
+const track           = ref(null)
+const loading         = ref(false)
+const fetchError      = ref('')
+const drmInfo         = ref(null)
+const downloading     = ref(false)
+const downloadError   = ref('')
 const downloadSuccess = ref('')
-const progress      = ref(0)
-const progressText  = ref('Wachten op download...')
+const progress        = ref(0)
+const progressText    = ref('Wachten op download...')
 
 const trackFormatLabel = computed(() => {
-  if (track.value?.filename?.toLowerCase().endsWith('.m4a') || track.value?.extension === '.m4a') {
-    return 'M4A'
-  }
-  if (track.value?.filename?.toLowerCase().endsWith('.ogg') || track.value?.extension === '.ogg') {
-    return 'OGG (Opus)'
-  }
+  const ext = (track.value?.extension || (track.value?.filename?.includes('.') ? '.' + track.value.filename.split('.').pop() : '')).toLowerCase()
+  if (ext === '.m4a') return 'M4A'
+  if (ext === '.ogg') return 'OGG (Opus)'
+  if (ext === '.wav') return 'WAV'
+  if (ext === '.flac') return 'FLAC'
+  if (ext === '.aiff' || ext === '.aif') return 'AIFF'
   return 'MP3'
 })
 
@@ -128,17 +162,30 @@ async function fetchTrack() {
   if (!trackUrl.value.trim()) return
   loading.value = true
   fetchError.value = ''
+  drmInfo.value = null
   track.value = null
   downloadError.value = ''
   downloadSuccess.value = ''
   progress.value = 0
   progressText.value = 'Wachten op download...'
 
+  const targetUrl = trackUrl.value.trim()
+
   try {
-    const res = await fetch(`${API}/api/track?url=${encodeURIComponent(trackUrl.value.trim())}`)
+    const res = await fetch(`${API}/api/track?url=${encodeURIComponent(targetUrl)}`)
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      fetchError.value = data.detail || `Fout ${res.status}: Kan track niet ophalen.`
+      const detailMsg = typeof data.detail === 'string' ? data.detail : ''
+      const isDrm = res.status === 403 || detailMsg.toLowerCase().includes('drm')
+
+      if (isDrm) {
+        drmInfo.value = {
+          message: detailMsg || 'Dit nummer is DRM-beveiligd door SoundCloud en kan niet worden gedownload.',
+          url: targetUrl
+        }
+      } else {
+        fetchError.value = detailMsg || `Fout ${res.status}: Kan track niet ophalen.`
+      }
       return
     }
     track.value = await res.json()
@@ -158,11 +205,23 @@ async function downloadTrack() {
   progress.value = 0
   progressText.value = 'Verbinding maken...'
 
+  const targetUrl = trackUrl.value.trim()
+
   try {
-    const res = await fetch(`${API}/api/download?url=${encodeURIComponent(trackUrl.value.trim())}`)
+    const res = await fetch(`${API}/api/download?url=${encodeURIComponent(targetUrl)}`)
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      downloadError.value = data.detail || `Fout ${res.status}: Download mislukt.`
+      const detailMsg = typeof data.detail === 'string' ? data.detail : ''
+      const isDrm = res.status === 403 || detailMsg.toLowerCase().includes('drm')
+
+      if (isDrm) {
+        drmInfo.value = {
+          message: detailMsg || 'Dit nummer is DRM-beveiligd door SoundCloud en kan niet worden gedownload.',
+          url: targetUrl
+        }
+      } else {
+        downloadError.value = detailMsg || `Fout ${res.status}: Download mislukt.`
+      }
       return
     }
 
@@ -178,6 +237,12 @@ async function downloadTrack() {
       pickerTypes = [{ description: 'M4A-audiobestand', accept: { 'audio/mp4': ['.m4a'] } }]
     } else if (ext === '.ogg') {
       pickerTypes = [{ description: 'OGG-audiobestand', accept: { 'audio/ogg': ['.ogg'] } }]
+    } else if (ext === '.wav') {
+      pickerTypes = [{ description: 'WAV-audiobestand', accept: { 'audio/wav': ['.wav'] } }]
+    } else if (ext === '.flac') {
+      pickerTypes = [{ description: 'FLAC-audiobestand', accept: { 'audio/flac': ['.flac'] } }]
+    } else if (ext === '.aiff' || ext === '.aif') {
+      pickerTypes = [{ description: 'AIFF-audiobestand', accept: { 'audio/aiff': ['.aiff', '.aif'] } }]
     }
 
     let fileHandle = null
@@ -236,7 +301,13 @@ async function downloadTrack() {
       downloadSuccess.value = `'${track.value.title}' is succesvol opgeslagen!`
     } else {
       // Fallback: <a download> in de browser
-      const mime = track.value.media_type || (ext === '.m4a' ? 'audio/mp4' : (ext === '.ogg' ? 'audio/ogg' : 'audio/mpeg'))
+      const mime = track.value.media_type || (
+        ext === '.m4a' ? 'audio/mp4' :
+        ext === '.ogg' ? 'audio/ogg' :
+        ext === '.wav' ? 'audio/wav' :
+        ext === '.flac' ? 'audio/flac' :
+        ext === '.aiff' || ext === '.aif' ? 'audio/aiff' : 'audio/mpeg'
+      )
       const blob = new Blob(chunks, { type: mime })
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
@@ -370,6 +441,68 @@ function formatDuration(ms) {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* DRM Informatiebanner */
+.drm-banner {
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+}
+.drm-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.drm-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.drm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.drm-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #93c5fd;
+  margin: 0;
+}
+.drm-message {
+  font-size: 0.875rem;
+  color: #cbd5e1;
+  line-height: 1.45;
+  margin: 0;
+}
+.drm-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+.drm-btn {
+  text-decoration: none;
+  font-size: 0.85rem;
+  padding: 8px 14px;
+  background: #2d2d2d;
+  border: 1px solid #444;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  transition: background .15s, border-color .15s;
+}
+.drm-btn:hover {
+  background: #3a3a3a;
+  border-color: #666;
+  color: #fff;
+}
+
 /* Preview */
 .preview-card { gap: 18px; }
 .preview {
@@ -396,7 +529,24 @@ function formatDuration(ms) {
   flex-shrink: 0;
 }
 .track-meta { display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+.track-meta-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .track-label { font-size: .68rem; font-weight: 700; letter-spacing: .07em; color: var(--accent); text-transform: uppercase; }
+.badge-artist-download {
+  display: inline-block;
+  background: rgba(0, 230, 118, 0.15);
+  color: #00E676;
+  border: 1px solid rgba(0, 230, 118, 0.3);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  width: fit-content;
+}
 .track-title { font-size: 1.1rem; font-weight: 700; color: var(--text); line-height: 1.3; word-break: break-word; }
 .track-artist { color: var(--muted); font-size: .875rem; }
 .track-duration { color: var(--muted); font-size: .8rem; }
