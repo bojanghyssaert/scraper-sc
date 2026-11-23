@@ -3,18 +3,32 @@ import re
 import os
 import tkinter as tk
 from tkinter import filedialog
-import threading
 from tkinter import messagebox
+import threading
 
 
-def choose_save_map():
-    root = tk.Tk()
-    root.withdraw()
+def update_status(text, fg="blue"):
+    venster.after(0, lambda: status_label.config(text=text, fg=fg))
 
-    root.attributes('-topmost', True)
 
-    map_path = filedialog.askdirectory(title="choose a map to save the file in")
-    return map_path
+def show_ui_message(kind, title, message):
+    def _show():
+        if kind == "error":
+            messagebox.showerror(title, message, parent=venster)
+        elif kind == "warning":
+            messagebox.showwarning(title, message, parent=venster)
+        elif kind == "info":
+            messagebox.showinfo(title, message, parent=venster)
+    venster.after(0, _show)
+
+
+def set_download_state(enabled):
+    state = "normal" if enabled else "disabled"
+    venster.after(0, lambda: download_knop.config(state=state))
+
+
+def clear_input():
+    venster.after(0, lambda: invoerveld.delete(0, tk.END))
 
 
 def get_client_id():
@@ -41,24 +55,25 @@ def get_client_id():
 
     return None
 
-def download_track(track_url, client_id):
+def download_track(track_url, client_id, savemap):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
-    status_label.config(text="gegevens ophalen", fg="blue")
+    update_status("Gegevens ophalen...", "blue")
 
     resolve_url = f"https://api-v2.soundcloud.com/resolve?url={track_url}&client_id={client_id}"
     response = requests.get(resolve_url, headers=headers)
 
     if response.status_code != 200:
-        messagebox.showerror("Fout", "kan de track niet vinden")
-        status_label.config(text="")
+        show_ui_message("error", "Fout", "Kan de track niet vinden.")
+        update_status("")
+        set_download_state(True)
         return
 
     track_info = response.json()
     title = track_info.get('title', 'onbekende_track')
-    print(f"nummer gevonden {title}")
+    print(f"Nummer gevonden: {title}")
 
     stream_url = None
     for transcoding in track_info.get('media', {}).get('transcodings', []):
@@ -67,52 +82,51 @@ def download_track(track_url, client_id):
             break
 
     if not stream_url:
-        messagebox.showerror("Fout", "Kan geen MP3 vinden voor dit liedje")
-        status_label.config(text="")
+        show_ui_message("error", "Fout", "Kan geen MP3 vinden voor dit liedje.")
+        update_status("")
+        set_download_state(True)
         return
 
-
-    status_label.config(text="Downloadlink genereren...")
+    update_status("Downloadlink genereren...", "blue")
     stream_url_with_auth = f"{stream_url}?client_id={client_id}"
     media_response = requests.get(stream_url_with_auth, headers=headers).json()
     download_url = media_response.get('url')
 
-    status_label.config(text="Audiobestand downloaden (dit kan even duren)...")
+    update_status("Audiobestand downloaden (dit kan even duren)...", "blue")
     audio_data = requests.get(download_url, headers=headers).content
 
-    safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()
+    safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip() or "track"
     filename = f"{safe_title}.mp3"
-
-    status_label.config(text="Kies een opslagmap", fg="blue")
-    savemap = choose_save_map()
-
-    if not savemap:
-        messagebox.showwarning("Geannuleerd", "Download geannuleerd: geen map geselecteerd.")
-        status_label.config(text="")
-        return
-
     full_path = os.path.join(savemap, filename)
 
     with open(full_path, 'wb') as file:
         file.write(audio_data)
 
-    status_label.config(text="Download succesvol afgerond!", fg="green")
-    invoerveld.delete(0, tk.END)
-    messagebox.showinfo("Succes", f"'{title}' is succesvol opgeslagen!")
-    
-
+    update_status("Download succesvol afgerond!", "green")
+    clear_input()
+    show_ui_message("info", "Succes", f"'{title}' is succesvol opgeslagen!")
+    set_download_state(True)
 
 
 def start_download():
-    url = invoerveld.get()
+    url = invoerveld.get().strip()
 
     if not url:
-        messagebox.showwarning("Oeps!", "Voer eerst een geldige SoundCloud URL in.")
+        messagebox.showwarning("Oeps!", "Voer eerst een geldige SoundCloud URL in.", parent=venster)
         return
 
-    status_label.config(text="Starten met downloaden...", fg="blue")
+    savemap = filedialog.askdirectory(parent=venster, title="Kies een map om het bestand in op te slaan")
+    if not savemap:
+        return
 
-    download_thread = threading.Thread(target=download_track, args=(url, applicatie_client_id))
+    set_download_state(False)
+    update_status("Starten met downloaden...", "blue")
+
+    download_thread = threading.Thread(
+        target=download_track,
+        args=(url, applicatie_client_id, savemap),
+        daemon=True
+    )
     download_thread.start()
 
 
@@ -136,7 +150,7 @@ if __name__ == "__main__":
         invoerveld = tk.Entry(venster, width=50)
         invoerveld.pack(pady=5)
 
-        download_knop = tk.Button(venster, text="Dowload MP3", command=start_download)
+        download_knop = tk.Button(venster, text="Download MP3", command=start_download)
         download_knop.pack(pady=20)
 
         status_label = tk.Label(venster, text="", fg="blue")
