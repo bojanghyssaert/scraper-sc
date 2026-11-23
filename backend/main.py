@@ -113,6 +113,7 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
         extension           (str)
         media_type          (str)
         is_artist_download  (bool)
+        formats             (list) — lijst van beschikbare opties ({id, label, extension})
     """
     client_id = _get_cached_client_id()
     try:
@@ -131,18 +132,23 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
         "extension": info.get("extension", ".mp3"),
         "media_type": info.get("media_type", "audio/mpeg"),
         "is_artist_download": info.get("is_artist_download", False),
+        "formats": info.get("formats", []),
     }
 
 
 @app.get("/api/download")
-def download_track(url: str = Query(..., description="Publieke SoundCloud track-URL")):
+def download_track(
+    url: str = Query(..., description="Publieke SoundCloud track-URL"),
+    format_id: str | None = Query(None, description="ID van het gewenste audioformaat (bijv. mp3, m4a, original)"),
+):
     """
     Streamt het audiobestand met metadata en accurate Content-Disposition en Content-Length headers.
+    Ondersteunt optionele format_id queryparameter.
     """
     client_id = _get_cached_client_id()
 
     try:
-        info = get_track_info(url, client_id)
+        info = get_track_info(url, client_id, format_id=format_id)
         if info.get("direct_url"):
             download_url = info["direct_url"]
         else:
