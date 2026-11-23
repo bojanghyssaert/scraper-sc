@@ -112,6 +112,16 @@
           </div>
         </div>
 
+        <!-- Audio Preview Speler -->
+        <div class="player-block">
+          <span class="field-label">AUDIO VOORBEELD</span>
+          <AudioPlayer
+            ref="audioPlayerRef"
+            :src="previewAudioUrl"
+            :duration-ms="track.duration_ms"
+          />
+        </div>
+
         <!-- Voortgangsbalk -->
         <div class="progress-block">
           <div class="progress-header">
@@ -141,7 +151,8 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import AudioPlayer from './components/AudioPlayer.vue'
 
 const API = 'http://localhost:8000'
 
@@ -156,6 +167,12 @@ const downloadError     = ref('')
 const downloadSuccess   = ref('')
 const progress          = ref(0)
 const progressText      = ref('Wachten op download...')
+const audioPlayerRef    = ref(null)
+
+const previewAudioUrl = computed(() => {
+  if (!track.value || !trackUrl.value.trim()) return ''
+  return `${API}/api/preview?url=${encodeURIComponent(trackUrl.value.trim())}`
+})
 
 // Bepaal het huidig actieve formaatobject
 const selectedFormat = computed(() => {
@@ -230,9 +247,19 @@ async function pasteFromClipboard() {
   }
 }
 
+// ── Reset speler bij wijziging van URL ──
+watch(trackUrl, () => {
+  if (audioPlayerRef.value) {
+    audioPlayerRef.value.reset()
+  }
+})
+
 // ── Track ophalen ──
 async function fetchTrack() {
   if (!trackUrl.value.trim()) return
+  if (audioPlayerRef.value) {
+    audioPlayerRef.value.reset()
+  }
   loading.value = true
   fetchError.value = ''
   drmInfo.value = null
@@ -672,6 +699,13 @@ function formatDuration(ms) {
   background: #242424;
   color: #fff;
   padding: 8px;
+}
+
+/* Player */
+.player-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 /* Progress */

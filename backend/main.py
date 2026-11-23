@@ -4,6 +4,7 @@ FastAPI backend voor de SoundCloud Downloader webapp.
 Endpoints:
     GET /api/track?url=...     — Track-metadata ophalen
     GET /api/download?url=...  — Audiobestand streamen (MP3 of M4A)
+    GET /api/preview?url=...   — Audio preview streamen voor directe browserweergave
     GET /api/search?q=...      — Tracks zoeken op SoundCloud
 """
 
@@ -182,6 +183,51 @@ def download_track(
 
     return StreamingResponse(
         io.BytesIO(final_audio),
+        media_type=media_type,
+        headers=headers,
+    )
+
+
+@app.get("/api/preview")
+def preview_track(url: str = Query(..., description="Publieke SoundCloud track-URL")):
+    """
+    Streamt het audiobestand zonder Content-Disposition: attachment header
+    voor directe weergave in een HTML5 <audio>-element.
+    """
+    client_id = _get_cached_client_id()
+
+    try:
+        info = get_track_info(url, client_id)
+        if info.get("direct_url"):
+            download_url = info["direct_url"]
+        else:
+            download_url = get_download_url(
+                info["stream_url"],
+                client_id,
+                info.get("track_authorization"),
+                is_direct=info.get("stream_protocol") == "direct",
+            )
+    except SoundCloudDRMError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except SoundCloudError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        chunks = stream_audio(download_url)
+        raw_audio = b"".join(chunks)
+    except SoundCloudError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    media_type = info.get("media_type", "audio/mpeg")
+
+    headers = {
+        "Content-Length": str(len(raw_audio)),
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-cache",
+    }
+
+    return StreamingResponse(
+        io.BytesIO(raw_audio),
         media_type=media_type,
         headers=headers,
     )

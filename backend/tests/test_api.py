@@ -201,3 +201,71 @@ def test_api_search_success(client):
         assert "results" in data
         assert len(data["results"]) == 2
         assert data["results"][0]["title"] == "Result One"
+
+
+def test_api_preview_success(client):
+    """Verifieert dat /api/preview audio streamt zonder Content-Disposition attachment."""
+    mock_info = {
+        "title": "Preview Track",
+        "artist": "Preview Artist",
+        "filename": "Preview Artist - Preview Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_prev",
+        "stream_protocol": "progressive",
+    }
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info), \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/preview.mp3"), \
+         patch("backend.main.stream_audio", return_value=iter([b"preview_chunk_1", b"preview_chunk_2"])):
+
+        response = client.get("/api/preview?url=https://soundcloud.com/artist/preview-track")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mpeg"
+        assert "content-disposition" not in response.headers
+        assert response.headers["content-length"] == str(len(b"preview_chunk_1preview_chunk_2"))
+        assert response.headers.get("accept-ranges") == "bytes"
+        assert response.content == b"preview_chunk_1preview_chunk_2"
+
+
+def test_api_preview_not_found(client):
+    """Verifieert dat /api/preview 400 retourneert als de track niet gevonden wordt."""
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", side_effect=SoundCloudError("Track niet gevonden")):
+
+        response = client.get("/api/preview?url=https://soundcloud.com/artist/nonexistent")
+        assert response.status_code == 400
+        assert "Track niet gevonden" in response.json()["detail"]
+
+
+def test_api_preview_drm_protected(client):
+    """Verifieert dat /api/preview 403 retourneert bij DRM-beveiligde tracks."""
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", side_effect=SoundCloudDRMError("DRM-beveiligd")):
+
+        response = client.get("/api/preview?url=https://soundcloud.com/artist/drm-protected")
+        assert response.status_code == 403
+        assert "DRM-beveiligd" in response.json()["detail"]
+
+
+def test_api_preview_stream_error(client):
+    """Verifieert dat /api/preview 502 retourneert als stream_audio faalt."""
+    mock_info = {
+        "title": "Error Track",
+        "artist": "Error Artist",
+        "filename": "Error Artist - Error Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_err",
+        "stream_protocol": "progressive",
+    }
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info), \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/error.mp3"), \
+         patch("backend.main.stream_audio", side_effect=SoundCloudError("Stream netwerkfout")):
+
+        response = client.get("/api/preview?url=https://soundcloud.com/artist/stream-error")
+        assert response.status_code == 502
+        assert "Stream netwerkfout" in response.json()["detail"]
