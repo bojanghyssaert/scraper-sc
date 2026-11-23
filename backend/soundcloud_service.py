@@ -108,42 +108,87 @@ def get_track_info(track_url: str, client_id: str) -> dict:
 
     duration_ms = data.get("duration", 0)
 
-    # Veilige bestandsnaam
-    safe_artist = "".join(c for c in artist if c.isalnum() or c in " -_").strip()
-    safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()
-    filename = f"{safe_artist} - {safe_title}.mp3" if safe_artist else f"{safe_title}.mp3"
-    filename = filename or "track.mp3"
-
-    # Zoek eerst naar progressive stream met audio/mpeg, val terug op HLS met audio/mpeg
+    # Zoek naar onbeveiligde streams in volgorde van voorkeur (encrypted-hls wordt overgeslagen):
+    # 1. progressive met audio/mpeg (.mp3, audio/mpeg)
+    # 2. hls met audio/mpeg (.mp3, audio/mpeg)
+    # 3. hls met audio/ogg (.ogg, audio/ogg)
     transcodings = data.get("media", {}).get("transcodings", [])
     stream_url = None
     stream_protocol = None
+    media_type = None
+    extension = None
 
     # 1. Progressive met audio/mpeg
     for transcoding in transcodings:
         fmt = transcoding.get("format", {})
-        protocol = fmt.get("protocol")
+        protocol = fmt.get("protocol", "")
         mime = fmt.get("mime_type", "")
-        if protocol == "progressive" and mime == "audio/mpeg":
+        if "encrypted" in protocol.lower():
+            continue
+        if protocol == "progressive" and (mime == "audio/mpeg" or (mime.startswith("audio/mpeg") and "mpegurl" not in mime)):
             stream_url = transcoding.get("url")
             stream_protocol = "progressive"
+            media_type = "audio/mpeg"
+            extension = ".mp3"
             break
 
     # 2. HLS met audio/mpeg
     if not stream_url:
         for transcoding in transcodings:
             fmt = transcoding.get("format", {})
-            protocol = fmt.get("protocol")
+            protocol = fmt.get("protocol", "")
             mime = fmt.get("mime_type", "")
-            if protocol == "hls" and mime == "audio/mpeg":
+            if "encrypted" in protocol.lower():
+                continue
+            if protocol == "hls" and (mime == "audio/mpeg" or (mime.startswith("audio/mpeg") and "mpegurl" not in mime)):
                 stream_url = transcoding.get("url")
                 stream_protocol = "hls"
+                media_type = "audio/mpeg"
+                extension = ".mp3"
+                break
+
+    # 3. HLS met audio/ogg
+    if not stream_url:
+        for transcoding in transcodings:
+            fmt = transcoding.get("format", {})
+            protocol = fmt.get("protocol", "")
+            mime = fmt.get("mime_type", "")
+            if "encrypted" in protocol.lower():
+                continue
+            if protocol == "hls" and "audio/ogg" in mime:
+                stream_url = transcoding.get("url")
+                stream_protocol = "hls"
+                media_type = "audio/ogg"
+                extension = ".ogg"
                 break
 
     if not stream_url:
-        raise SoundCloudError(
-            "Geen MP3-stream beschikbaar voor dit nummer (mogelijk DRM-beschermd)."
-        )
+        # Lijst van beschikbare formaten printen naar de terminal
+        format_list = [
+            f"{t.get('format', {}).get('protocol')} ({t.get('format', {}).get('mime_type')})"
+            for t in transcodings
+        ]
+        print(f"Beschikbare formaten voor '{title}':", format_list)
+
+        # Controleer of er alleen encrypted-hls aanwezig is
+        has_encrypted = any("encrypted" in t.get("format", {}).get("protocol", "").lower() for t in transcodings)
+        only_encrypted = bool(transcodings) and all("encrypted" in t.get("format", {}).get("protocol", "").lower() for t in transcodings)
+
+        if only_encrypted or (has_encrypted and not any(t.get("format", {}).get("protocol") in ("progressive", "hls") for t in transcodings)):
+            raise SoundCloudError(
+                f"Deze track ('{title}') is DRM-beveiligd (alleen encrypted-hls beschikbaar) en kan niet worden gedownload."
+            )
+        else:
+            formats_str = ", ".join(format_list) if format_list else "geen formaten gevonden"
+            raise SoundCloudError(
+                f"Geen ondersteunde onbeveiligde MP3- of Opus-stream gevonden voor '{title}'. Beschikbare formaten: {formats_str}."
+            )
+
+    # Veilige bestandsnaam met juiste extensie
+    safe_artist = "".join(c for c in artist if c.isalnum() or c in " -_").strip()
+    safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()
+    filename = f"{safe_artist} - {safe_title}{extension}" if safe_artist else f"{safe_title}{extension}"
+    filename = filename or f"track{extension}"
 
     track_authorization = data.get("track_authorization")
 
@@ -153,6 +198,8 @@ def get_track_info(track_url: str, client_id: str) -> dict:
         "artwork_url": artwork_url,
         "duration_ms": duration_ms,
         "filename": filename,
+        "extension": extension,
+        "media_type": media_type,
         "stream_url": stream_url,
         "stream_protocol": stream_protocol,
         "track_authorization": track_authorization,
