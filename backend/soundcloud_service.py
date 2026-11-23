@@ -12,9 +12,13 @@ from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 import urllib.parse
 import zipfile
 from typing import Callable
+import imageio_ffmpeg
 import requests
 from mutagen.id3 import ID3, TIT2, TPE1, APIC, ID3NoHeaderError
 from mutagen.mp4 import MP4, MP4Cover
@@ -531,13 +535,14 @@ def get_track_info(
     if chosen_m4a:
         available_formats.append({
             "id": "m4a",
-            "label": "M4A (Hoge kwaliteit)",
-            "extension": ".m4a",
-            "media_type": "audio/mp4",
+            "label": "MP3 (via M4A)",
+            "extension": ".mp3",
+            "media_type": "audio/mpeg",
             "stream_url": chosen_m4a.get("url"),
             "stream_protocol": m4a_protocol,
             "direct_url": None,
             "is_artist_download": False,
+            "is_m4a": True,
         })
 
     # Foutafhandeling indien er geen enkel ondersteund onbeveiligd formaat beschikbaar is
@@ -610,6 +615,7 @@ def get_track_info(
         "track_authorization": track_authorization,
         "direct_url": direct_url,
         "is_artist_download": is_artist_download,
+        "is_m4a": selected_format.get("is_m4a", False),
         "format_id": selected_format["id"],
         "formats": [
             {
@@ -953,6 +959,71 @@ def embed_metadata(audio_bytes: bytes, extension: str, info: dict) -> bytes:
     return audio_bytes
 
 
+def convert_m4a_to_mp3(m4a_bytes: bytes) -> bytes:
+    """
+    Converteert M4A/AAC audio-bytes naar een standaard MP3-bestand (256 kbps) via FFmpeg.
+    Schrijft de input tijdelijk weg in een TemporaryDirectory om fragmented MP4/HLS-headers
+    foutloos te ontleden en ruimt alle tijdelijke bestanden na afloop direct automatisch op.
+
+    Args:
+        m4a_bytes: Ruwe binaire inhoud van het M4A/AAC audiobestand.
+
+    Returns:
+        Binaire inhoud van het geconverteerde MP3-bestand.
+
+    Raises:
+        SoundCloudError: Als FFmpeg ontbreekt of de audioconversie faalt (wordt gelogd naar error.log).
+    """
+    if not m4a_bytes:
+        raise SoundCloudError("Geen audiogegevens ontvangen voor M4A-naar-MP3 conversie.")
+
+    try:
+        ffmpeg_exe = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:
+        logger.error(f"Fout bij bepalen van FFmpeg-pad: {exc}", exc_info=True)
+        raise SoundCloudError(f"FFmpeg is niet beschikbaar op het systeem: {exc}") from exc
+
+    if not ffmpeg_exe:
+        logger.error("FFmpeg executable niet gevonden via PATH of imageio_ffmpeg.")
+        raise SoundCloudError("FFmpeg executable niet gevonden op het systeem.")
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "input.m4a"
+            output_file = Path(tmpdir) / "output.mp3"
+
+            input_file.write_bytes(m4a_bytes)
+
+            cmd = [
+                str(ffmpeg_exe),
+                "-y",
+                "-i",
+                str(input_file),
+                "-vn",
+                "-acodec",
+                "libmp3lame",
+                "-b:a",
+                "256k",
+                str(output_file),
+            ]
+
+            subprocess.run(cmd, check=True, capture_output=True)
+
+            if not output_file.exists():
+                raise SoundCloudError("FFmpeg heeft geen output.mp3 bestand gegenereerd.")
+
+            return output_file.read_bytes()
+    except subprocess.CalledProcessError as exc:
+        err_msg = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc)
+        logger.error(f"FFmpeg-conversiefout (exit code {exc.returncode}): {err_msg}", exc_info=True)
+        raise SoundCloudError(f"Fout tijdens audioconversie naar MP3: {err_msg}") from exc
+    except SoundCloudError:
+        raise
+    except Exception as exc:
+        logger.error(f"Onverwachte fout tijdens audioconversie naar MP3: {exc}", exc_info=True)
+        raise SoundCloudError(f"Onverwachte fout tijdens audioconversie naar MP3: {exc}") from exc
+
+
 def download_tracks_as_zip(
     track_urls: list[str],
     client_id: str | None = None,
@@ -988,6 +1059,8 @@ def download_tracks_as_zip(
                 )
             chunks = stream_audio(dl_url)
             raw_audio = b"".join(chunks)
+            if info.get("is_m4a") or info.get("format_id") == "m4a":
+                raw_audio = convert_m4a_to_mp3(raw_audio)
             extension = info.get("extension", ".mp3")
             final_audio = embed_metadata(raw_audio, extension, info)
             filename = info.get("filename") or f"track_{index + 1}{extension}"

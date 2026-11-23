@@ -34,7 +34,7 @@ def test_api_track_success(client):
         "stream_url": "https://api-v2.soundcloud.com/media/dummy",
         "formats": [
             {"id": "mp3", "label": "MP3 (Standaard)", "extension": ".mp3"},
-            {"id": "m4a", "label": "M4A (Hoge kwaliteit)", "extension": ".m4a"},
+            {"id": "m4a", "label": "MP3 (via M4A)", "extension": ".mp3"},
         ],
     }
 
@@ -151,31 +151,116 @@ def test_api_download_success(client):
 
 
 def test_api_download_with_format_id(client):
-    """Verifieert dat /api/download de format_id parameter doorgeeft aan get_track_info."""
+    """Verifieert dat /api/download de format_id parameter doorgeeft aan get_track_info en M4A omzet naar MP3."""
     mock_info = {
         "title": "Streamed M4A Track",
         "artist": "Streamed Artist",
-        "filename": "Streamed Artist - Streamed M4A Track.m4a",
-        "media_type": "audio/mp4",
-        "extension": ".m4a",
+        "filename": "Streamed Artist - Streamed M4A Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
         "stream_url": "https://api-v2.soundcloud.com/media/stream_m4a",
         "stream_protocol": "hls",
+        "format_id": "m4a",
+        "is_m4a": True,
     }
+
+    dummy_mp3 = b"\xff\xfb\x90\x64" + b"\x00" * 200
 
     with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
          patch("backend.main.get_track_info", return_value=mock_info) as mock_get_info, \
          patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/playlist.m3u8"), \
-         patch("backend.main.stream_audio", return_value=iter([b"fake_m4a_chunk"])):
+         patch("backend.main.stream_audio", return_value=iter([b"fake_m4a_chunk"])), \
+         patch("backend.main.convert_m4a_to_mp3", return_value=dummy_mp3) as mock_convert:
 
         response = client.get("/api/download?url=https://soundcloud.com/artist/m4a-track&format_id=m4a")
         assert response.status_code == 200
-        assert response.headers["content-type"] == "audio/mp4"
-        assert 'attachment; filename="Streamed Artist - Streamed M4A Track.m4a"' in response.headers["content-disposition"]
+        assert response.headers["content-type"] == "audio/mpeg"
+        assert 'attachment; filename="Streamed Artist - Streamed M4A Track.mp3"' in response.headers["content-disposition"]
         mock_get_info.assert_called_once_with(
             "https://soundcloud.com/artist/m4a-track",
             "dummy_id",
             format_id="m4a",
         )
+        mock_convert.assert_called_once_with(b"fake_m4a_chunk")
+
+
+def test_api_download_m4a_conversion_error(client):
+    """Verifieert dat een conversiefout tijdens M4A-naar-MP3 leidt tot HTTP 500."""
+    mock_info = {
+        "title": "Broken M4A Track",
+        "artist": "Broken Artist",
+        "filename": "Broken Artist - Broken M4A Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_m4a",
+        "stream_protocol": "hls",
+        "format_id": "m4a",
+        "is_m4a": True,
+    }
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info), \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/playlist.m3u8"), \
+         patch("backend.main.stream_audio", return_value=iter([b"corrupt_m4a"])), \
+         patch("backend.main.convert_m4a_to_mp3", side_effect=SoundCloudError("FFmpeg conversie mislukt")):
+
+        response = client.get("/api/download?url=https://soundcloud.com/artist/broken-m4a")
+        assert response.status_code == 500
+        assert "FFmpeg conversie mislukt" in response.json()["detail"]
+
+
+def test_api_preview_m4a_stream(client):
+    """Verifieert dat /api/preview voor een M4A-stream automatisch naar MP3 converteert en audio/mpeg retourneert."""
+    mock_info = {
+        "title": "Preview M4A Track",
+        "artist": "Preview Artist",
+        "filename": "Preview Artist - Preview M4A Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_m4a",
+        "stream_protocol": "hls",
+        "format_id": "m4a",
+        "is_m4a": True,
+    }
+
+    dummy_mp3 = b"\xff\xfb\x90\x64" + b"\x00" * 300
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info), \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/playlist.m3u8"), \
+         patch("backend.main.stream_audio", return_value=iter([b"m4a_preview_chunk"])), \
+         patch("backend.main.convert_m4a_to_mp3", return_value=dummy_mp3) as mock_convert:
+
+        response = client.get("/api/preview?url=https://soundcloud.com/artist/m4a-preview")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mpeg"
+        assert response.content == dummy_mp3
+        mock_convert.assert_called_once_with(b"m4a_preview_chunk")
+
+
+def test_api_preview_m4a_conversion_error(client):
+    """Verifieert dat een conversiefout tijdens /api/preview leidt tot HTTP 500."""
+    mock_info = {
+        "title": "Broken Preview Track",
+        "artist": "Broken Artist",
+        "filename": "Broken Artist - Broken Preview Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_m4a",
+        "stream_protocol": "hls",
+        "format_id": "m4a",
+        "is_m4a": True,
+    }
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info), \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/playlist.m3u8"), \
+         patch("backend.main.stream_audio", return_value=iter([b"corrupt_chunk"])), \
+         patch("backend.main.convert_m4a_to_mp3", side_effect=SoundCloudError("Conversiefout in preview")):
+
+        response = client.get("/api/preview?url=https://soundcloud.com/artist/broken-preview")
+        assert response.status_code == 500
+        assert "Conversiefout in preview" in response.json()["detail"]
 
 
 def test_api_download_invalid_format_id(client):
@@ -260,33 +345,38 @@ def test_api_preview_success(client):
 
 
 def test_api_preview_m4a_success(client):
-    """Verifieert dat /api/preview voor een M4A-track status 200 en content-type: audio/mp4 retourneert."""
+    """Verifieert dat /api/preview voor een M4A-track naar MP3 converteert en content-type: audio/mpeg retourneert."""
     mock_info = {
         "title": "Preview M4A Track",
         "artist": "M4A Artist",
-        "filename": "M4A Artist - Preview M4A Track.m4a",
-        "media_type": "audio/mp4",
-        "extension": ".m4a",
+        "filename": "M4A Artist - Preview M4A Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
         "format_id": "m4a",
+        "is_m4a": True,
         "stream_url": "https://api-v2.soundcloud.com/media/hls_m4a",
         "stream_protocol": "hls",
         "formats": [
-            {"id": "m4a", "label": "M4A (Hoge kwaliteit)", "extension": ".m4a"}
+            {"id": "m4a", "label": "MP3 (via M4A)", "extension": ".mp3"}
         ],
     }
+
+    dummy_mp3 = b"\xff\xfb\x90\x64" + b"\x00" * 250
 
     with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
          patch("backend.main.get_track_info", return_value=mock_info) as mock_get_info, \
          patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/playlist.m3u8"), \
-         patch("backend.main.stream_audio", return_value=iter([b"m4a_init_chunk", b"m4a_audio_chunk"])):
+         patch("backend.main.stream_audio", return_value=iter([b"m4a_init_chunk", b"m4a_audio_chunk"])), \
+         patch("backend.main.convert_m4a_to_mp3", return_value=dummy_mp3) as mock_convert:
 
         response = client.get("/api/preview?url=https://soundcloud.com/artist/m4a-track&format_id=m4a")
         assert response.status_code == 200
-        assert "audio/mp4" in response.headers["content-type"]
+        assert "audio/mpeg" in response.headers["content-type"]
         assert "content-disposition" not in response.headers
-        assert response.headers["content-length"] == str(len(b"m4a_init_chunkm4a_audio_chunk"))
+        assert response.headers["content-length"] == str(len(dummy_mp3))
         assert response.headers.get("accept-ranges") == "bytes"
-        assert response.content == b"m4a_init_chunkm4a_audio_chunk"
+        assert response.content == dummy_mp3
+        mock_convert.assert_called_once_with(b"m4a_init_chunkm4a_audio_chunk")
         mock_get_info.assert_called_once_with(
             "https://soundcloud.com/artist/m4a-track",
             "dummy_id",

@@ -58,6 +58,7 @@ try:
         stream_audio,
         download_tracks_as_zip,
         embed_metadata,
+        convert_m4a_to_mp3,
         HEADERS,
         TIMEOUT,
     )
@@ -76,6 +77,7 @@ except ImportError:
         stream_audio,
         download_tracks_as_zip,
         embed_metadata,
+        convert_m4a_to_mp3,
         HEADERS,
         TIMEOUT,
     )
@@ -223,6 +225,7 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
         "extension": info.get("extension", ".mp3"),
         "media_type": info.get("media_type", "audio/mpeg"),
         "is_artist_download": info.get("is_artist_download", False),
+        "is_m4a": info.get("is_m4a", False),
         "formats": info.get("formats", []),
     }
 
@@ -259,6 +262,12 @@ def download_track(
         raw_audio = b"".join(chunks)
     except SoundCloudError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+
+    if info.get("is_m4a") or info.get("format_id") == "m4a":
+        try:
+            raw_audio = convert_m4a_to_mp3(raw_audio)
+        except SoundCloudError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
 
     extension = info.get("extension", ".mp3")
     final_audio = embed_metadata(raw_audio, extension, info)
@@ -311,6 +320,12 @@ def preview_track(
         raw_audio = b"".join(chunks)
     except SoundCloudError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+
+    if info.get("is_m4a") or info.get("format_id") == "m4a":
+        try:
+            raw_audio = convert_m4a_to_mp3(raw_audio)
+        except SoundCloudError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
 
     media_type = info.get("media_type", "audio/mpeg")
 
