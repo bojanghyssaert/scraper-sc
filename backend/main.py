@@ -10,11 +10,38 @@ Endpoints:
 """
 
 import io
+import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 import requests as req_lib
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+# Project root en gecentraliseerde logging
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOGS_DIR = PROJECT_ROOT / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+ERROR_LOG_FILE = LOGS_DIR / "error.log"
+
+logger = logging.getLogger("soundcloud_scraper")
+if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+    logger.setLevel(logging.INFO)
+    file_handler = RotatingFileHandler(
+        str(ERROR_LOG_FILE),
+        maxBytes=1024 * 1024,  # max 1 MB
+        backupCount=5,
+        encoding="utf-8",
+    )
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
 try:
     from backend.soundcloud_service import (
@@ -62,6 +89,55 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """
+    Legt alle HTTP-fouten (4xx en 5xx) inclusief volledige traceback vast in logs/error.log.
+    """
+    logger.error(
+        f"HTTP-fout {exc.status_code} op {request.method} {request.url.path}: {exc.detail}",
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Legt validatiefouten (HTTP 422) inclusief volledige traceback vast in logs/error.log.
+    """
+    logger.error(
+        f"Validatiefout (HTTP 422) op {request.method} {request.url.path}: {exc.errors()}",
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Globale exception handler voor onverwachte serverfouten (HTTP 500).
+    Legt de fout inclusief volledige traceback vast in logs/error.log
+    voordat een nette foutmelding naar de frontend wordt geretourneerd.
+    """
+    logger.error(
+        f"Onverwachte serverfout op {request.method} {request.url.path}: {exc}",
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Er is een interne serverfout opgetreden. Raadpleeg de serverlogs voor meer informatie."
+        },
+    )
 
 # Client-ID beheer
 _client_id: str | None = None

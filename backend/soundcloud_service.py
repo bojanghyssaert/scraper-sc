@@ -7,7 +7,10 @@ track-metadata en de download-URL — zonder enige GUI-afhankelijkheid.
 
 import concurrent.futures
 import io
+import logging
+from logging.handlers import RotatingFileHandler
 import os
+from pathlib import Path
 import re
 import urllib.parse
 import zipfile
@@ -15,6 +18,28 @@ from typing import Callable
 import requests
 from mutagen.id3 import ID3, TIT2, TPE1, APIC, ID3NoHeaderError
 from mutagen.mp4 import MP4, MP4Cover
+
+# Project root en gecentraliseerde logging
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOGS_DIR = PROJECT_ROOT / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+ERROR_LOG_FILE = LOGS_DIR / "error.log"
+
+logger = logging.getLogger("soundcloud_scraper")
+if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+    logger.setLevel(logging.INFO)
+    file_handler = RotatingFileHandler(
+        str(ERROR_LOG_FILE),
+        maxBytes=1024 * 1024,  # max 1 MB
+        backupCount=5,
+        encoding="utf-8",
+    )
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
 HEADERS = {
     "User-Agent": (
@@ -32,6 +57,12 @@ _on_client_id_updated_callbacks: list[Callable[[str], None]] = []
 
 class SoundCloudError(Exception):
     """Domein-specifieke fout voor SoundCloud-bewerkingen."""
+
+    def __init__(self, message: str = "", *args):
+        super().__init__(message, *args)
+        import sys
+        has_exc = sys.exc_info()[0] is not None
+        logger.error(f"{self.__class__.__name__}: {message}", exc_info=has_exc)
 
 
 class SoundCloudDRMError(SoundCloudError):

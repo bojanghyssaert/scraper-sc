@@ -45,12 +45,21 @@ if (-not $NpmCmd) {
     $NpmCmd = "npm.cmd"
 }
 
-# 2. Eventuele achtergebleven processen op poort 8000 en 5173 eerst opruimen
-$stalePids = Get-NetTCPConnection -LocalPort 8000, 5173 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
-if ($stalePids) {
-    Write-Host "Oude processen op poort 8000 of 5173 gedetecteerd. Deze worden eerst beëindigd..." -ForegroundColor Yellow
+# 2. Map 'logs/' initialiseren voor gecentraliseerde logging
+$LogsDir = Join-Path $ProjectRoot "logs"
+if (-not (Test-Path $LogsDir)) {
+    New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
+}
+$BackendLog = Join-Path $LogsDir "backend.log"
+$FrontendLog = Join-Path $LogsDir "frontend.log"
+
+# 3. Eventuele achtergebleven processen op poort 8000 en 5173 automatisch controleren en opruimen
+$staleConns = Get-NetTCPConnection -LocalPort 8000, 5173 -ErrorAction SilentlyContinue
+if ($staleConns) {
+    $stalePids = $staleConns | Select-Object -ExpandProperty OwningProcess -Unique
+    Write-Host "Achtergebleven processen op poort 8000 of 5173 gedetecteerd. Deze worden eerst beëindigd..." -ForegroundColor Yellow
     foreach ($p in $stalePids) {
-        if ($p -gt 0) {
+        if ($p -and $p -gt 4) {
             taskkill /PID $p /T /F > $null 2>&1
         }
     }
@@ -65,38 +74,97 @@ $backendProcess = $null
 $frontendProcess = $null
 
 try {
-    # Start FastAPI-backend op de achtergrond in hetzelfde venster
+    # Start FastAPI-backend op de achtergrond en schrijf opstart- en foutmeldingen naar logs/backend.log
     Write-Host "[1/2] FastAPI-backend opstarten op poort 8000..." -ForegroundColor Yellow
-    $backendProcess = Start-Process -FilePath $PythonExe -ArgumentList "-m uvicorn backend.main:app --reload --port 8000" -PassThru -NoNewWindow
+    $backendCmd = "`"$PythonExe`" -m uvicorn backend.main:app --reload --port 8000 > `"$BackendLog`" 2>&1"
+    $backendProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$backendCmd`"" -PassThru -NoNewWindow
 
-    # Start Vue-frontend op de achtergrond in hetzelfde venster
+    # Start Vue-frontend op de achtergrond en schrijf opstart- en foutmeldingen naar logs/frontend.log
     Write-Host "[2/2] Vue-frontend opstarten op poort 5173..." -ForegroundColor Yellow
-    $frontendProcess = Start-Process -FilePath $NpmCmd -ArgumentList "--prefix frontend run dev" -PassThru -NoNewWindow
+    $frontendCmd = "`"$NpmCmd`" --prefix frontend run dev > `"$FrontendLog`" 2>&1"
+    $frontendProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$frontendCmd`"" -PassThru -NoNewWindow
 
-    # Wacht maximaal 10 seconden tot http://localhost:5173 bereikbaar is
-    Write-Host "Wachten tot http://localhost:5173 bereikbaar is (max. 10s)..." -ForegroundColor Cyan
+    # Wacht maximaal 10 seconden tot http://127.0.0.1:8000 en http://localhost:5173 bereikbaar zijn
+    Write-Host "Wachten tot backend en frontend bereikbaar zijn (max. 10s)..." -ForegroundColor Cyan
     $timeoutSeconds = 10
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $isReady = $false
+    $backendReady = $false
+    $frontendReady = $false
 
     while ($stopwatch.Elapsed.TotalSeconds -lt $timeoutSeconds) {
-        try {
-            $response = Invoke-WebRequest -Uri "http://localhost:5173" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
-            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
-                $isReady = $true
-                break
-            }
-        } catch {
-            # Wachten op gereedheid van de frontend server
+        # Controleer of processen vroegtijdig zijn gecrasht
+        if ($backendProcess.HasExited) {
+            break
         }
+        if ($frontendProcess.HasExited) {
+            break
+        }
+
+        # Controleer backend readiness (FastAPI docs)
+        if (-not $backendReady) {
+            try {
+                $bResp = Invoke-WebRequest -Uri "http://127.0.0.1:8000/docs" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
+                if ($bResp.StatusCode -ge 200 -and $bResp.StatusCode -lt 400) {
+                    $backendReady = $true
+                }
+            } catch { }
+        }
+
+        # Controleer frontend readiness (Vite)
+        if (-not $frontendReady) {
+            try {
+                $fResp = Invoke-WebRequest -Uri "http://localhost:5173" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
+                if ($fResp.StatusCode -ge 200 -and $fResp.StatusCode -lt 400) {
+                    $frontendReady = $true
+                }
+            } catch { }
+        }
+
+        if ($backendReady -and $frontendReady) {
+            break
+        }
+
         Start-Sleep -Milliseconds 500
     }
 
-    if ($isReady) {
-        Write-Host "Frontend is gereed! Browser wordt geopend..." -ForegroundColor Green
-    } else {
-        Write-Host "Frontend antwoordde nog niet binnen 10 seconden; browser wordt alsnog geopend..." -ForegroundColor Yellow
+    $hasStartupError = $false
+
+    if (-not $backendReady -or $backendProcess.HasExited) {
+        $hasStartupError = $true
+        Write-Host ""
+        Write-Host "FOUT: FastAPI-backend is gecrasht of reageerde niet binnen 10 seconden op poort 8000." -ForegroundColor Red
+        Write-Host "Laatste 15 regels uit '$BackendLog':" -ForegroundColor Red
+        Write-Host "----------------------------------------------------------------" -ForegroundColor Red
+        if (Test-Path $BackendLog) {
+            Get-Content $BackendLog -Tail 15 | ForEach-Object { Write-Host $_ -ForegroundColor DarkRed }
+        } else {
+            Write-Host "(Geen backend logbestand gevonden op $BackendLog)" -ForegroundColor DarkRed
+        }
+        Write-Host "----------------------------------------------------------------" -ForegroundColor Red
     }
+
+    if (-not $frontendReady -or $frontendProcess.HasExited) {
+        $hasStartupError = $true
+        Write-Host ""
+        Write-Host "FOUT: Vue-frontend is gecrasht of reageerde niet binnen 10 seconden op poort 5173." -ForegroundColor Red
+        Write-Host "Laatste 15 regels uit '$FrontendLog':" -ForegroundColor Red
+        Write-Host "----------------------------------------------------------------" -ForegroundColor Red
+        if (Test-Path $FrontendLog) {
+            Get-Content $FrontendLog -Tail 15 | ForEach-Object { Write-Host $_ -ForegroundColor DarkRed }
+        } else {
+            Write-Host "(Geen frontend logbestand gevonden op $FrontendLog)" -ForegroundColor DarkRed
+        }
+        Write-Host "----------------------------------------------------------------" -ForegroundColor Red
+    }
+
+    if ($hasStartupError) {
+        Write-Host ""
+        Write-Host "Opstarten afgebroken wegens fouten. Bekijk bovenstaande logs voor details." -ForegroundColor Red
+        Read-Host "Druk op ENTER om af te sluiten..."
+        exit 1
+    }
+
+    Write-Host "Backend en frontend zijn gereed! Browser wordt geopend..." -ForegroundColor Green
 
     # Open automatisch in de standaardbrowser
     Start-Process "http://localhost:5173"
@@ -106,6 +174,7 @@ try {
     Write-Host "  SoundCloud Scraper is succesvol gestart!" -ForegroundColor Green
     Write-Host "  - Backend:  http://localhost:8000 (API Docs: /docs)" -ForegroundColor Gray
     Write-Host "  - Frontend: http://localhost:5173" -ForegroundColor Gray
+    Write-Host "  - Logs:     $LogsDir" -ForegroundColor Gray
     Write-Host "================================================================" -ForegroundColor Green
     Write-Host ""
 
@@ -129,7 +198,7 @@ finally {
     $remainingPids = Get-NetTCPConnection -LocalPort 8000, 5173 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
     if ($remainingPids) {
         foreach ($rPid in $remainingPids) {
-            if ($rPid -gt 0) {
+            if ($rPid -and $rPid -gt 4) {
                 taskkill /PID $rPid /T /F > $null 2>&1
             }
         }

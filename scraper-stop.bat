@@ -13,7 +13,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
   "$pids = $conns | Select-Object -ExpandProperty OwningProcess -Unique; " ^
   "if ($pids) { " ^
   "  foreach ($procId in $pids) { " ^
-  "    if ($procId -gt 0) { " ^
+  "    if ($procId -gt 4) { " ^
   "      try { " ^
   "        $pName = (Get-Process -Id $procId -ErrorAction SilentlyContinue).ProcessName; " ^
   "        Write-Host ('[STOPPEN] Proces ' + $pName + ' (PID: ' + $procId + ') wordt beeindigd...') -ForegroundColor Yellow; " ^

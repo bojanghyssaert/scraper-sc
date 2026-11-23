@@ -394,3 +394,49 @@ def test_api_download_zip_error(client):
         response = client.post("/api/download-zip", json=payload)
         assert response.status_code == 400
         assert "Fout bij downloaden" in response.json()["detail"]
+
+
+def test_global_exception_handler_catches_unhandled_error():
+    """Verifieert dat onverwachte exceptions worden opgevangen en gelogd naar error.log met status 500."""
+    with TestClient(app, raise_server_exceptions=False) as no_raise_client:
+        with patch("backend.main._get_cached_client_id", return_value="dummy_cid"), \
+             patch("backend.main.get_track_info", side_effect=RuntimeError("Onverwachte crash in service")):
+            response = no_raise_client.get("/api/track?url=https://soundcloud.com/test/track")
+            assert response.status_code == 500
+            assert "interne serverfout" in response.json()["detail"].lower()
+
+
+def test_validation_error_handler_logs_422(client):
+    """Verifieert dat ontbrekende verplichte query-parameters (422) netjes worden gelogd."""
+    response = client.get("/api/track")
+    assert response.status_code == 422
+    assert "detail" in response.json()
+
+
+def test_logger_configuration():
+    """Verifieert dat RotatingFileHandler correct is geconfigureerd (max 1MB, UTF-8, timestamp en bestandsnaam)."""
+    from logging.handlers import RotatingFileHandler
+    from backend.main import logger, LOGS_DIR
+
+    assert LOGS_DIR.exists()
+    assert LOGS_DIR.is_dir()
+
+    handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+    assert len(handlers) >= 1
+    handler = handlers[0]
+    assert handler.maxBytes == 1024 * 1024
+    assert handler.encoding == "utf-8"
+
+    fmt = handler.formatter._fmt
+    assert "%(asctime)s" in fmt
+    assert "%(levelname)s" in fmt
+    assert "%(filename)s" in fmt
+
+
+def test_error_log_file_contains_entries():
+    """Verifieert dat fouten daadwerkelijk naar logs/error.log geschreven worden."""
+    from backend.main import ERROR_LOG_FILE
+    assert ERROR_LOG_FILE.exists()
+    content = ERROR_LOG_FILE.read_text(encoding="utf-8")
+    assert "Onverwachte crash in service" in content
+    assert "RuntimeError" in content

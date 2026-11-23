@@ -49,7 +49,8 @@ Voor Windows is er een gebruiksvriendelijk één-klik start- en stopmechanisme b
 soundcloud-scraper/
 ├── backend/
 │   ├── main.py                  # FastAPI applicatie met /api/track en /api/download
-│   └── soundcloud_service.py    # SoundCloud logica (geen GUI-afhankelijkheid)
+│   ├── soundcloud_service.py    # SoundCloud logica (geen GUI-afhankelijkheid)
+│   └── tests/                   # Geautomatiseerde backend-tests (pytest)
 ├── frontend/
 │   ├── src/
 │   │   ├── App.vue              # Hoofd Vue-component (alles in één)
@@ -57,6 +58,10 @@ soundcloud-scraper/
 │   │   └── style.css            # Globale stijlen (donker thema)
 │   ├── index.html
 │   └── vite.config.js
+├── logs/                        # Gecentraliseerde logbestanden (automatisch aangemaakt, in .gitignore)
+│   ├── error.log                # Backend exceptions, SoundCloudErrors & HTTP-fouten
+│   ├── backend.log              # Uvicorn server- en console-output
+│   └── frontend.log             # Vite dev server- en console-output
 ├── src/
 │   └── scraper.py               # Originele Tkinter GUI-versie (standalone)
 ├── scraper-start.bat            # Windows Verkenner dubbelklik-starter
@@ -65,6 +70,18 @@ soundcloud-scraper/
 ├── requirements.txt             # Python-afhankelijkheden voor de backend
 └── README.md
 ```
+
+---
+
+## 📋 Logbestanden & Foutopsporing
+
+Alle opstart-, runtime- en API-fouten worden automatisch geregistreerd in de map `logs/`:
+
+* **`logs/error.log`**: Gecentraliseerde Python-backend error-log via `RotatingFileHandler` (max. 1 MB, UTF-8). Bevat alle `SoundCloudError`-meldingen, HTTP 4xx/5xx responses en onverwachte serverexceptions inclusief volledige tracebacks en tijdstempels.
+* **`logs/backend.log`**: Console- en opstartoutput van de FastAPI / Uvicorn backend.
+* **`logs/frontend.log`**: Console- en opstartoutput van de Vue / Vite frontend-ontwikkelserver.
+
+Bij het opstarten via `scraper-start.bat` / `scraper-start.ps1` controleert het script automatisch of poort 8000 of 5173 nog bezet is door een achtergebleven proces en sluit dit direct af. Als een server crasht of niet binnen 10 seconden reageert, toont het script direct de laatste 15 regels uit het desbetreffende logbestand.
 
 ---
 
