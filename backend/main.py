@@ -7,6 +7,7 @@ Endpoints:
     GET /api/search?q=...      — Tracks zoeken op SoundCloud
 """
 
+import io
 import requests as req_lib
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,7 @@ try:
         get_track_info,
         search_tracks,
         stream_audio,
+        embed_metadata,
         HEADERS,
         TIMEOUT,
     )
@@ -41,6 +43,7 @@ except ImportError:
         get_track_info,
         search_tracks,
         stream_audio,
+        embed_metadata,
         HEADERS,
         TIMEOUT,
     )
@@ -134,7 +137,7 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
 @app.get("/api/download")
 def download_track(url: str = Query(..., description="Publieke SoundCloud track-URL")):
     """
-    Streamt het audiobestand met de juiste Content-Disposition en Content-Length headers.
+    Streamt het audiobestand met metadata en accurate Content-Disposition en Content-Length headers.
     """
     client_id = _get_cached_client_id()
 
@@ -154,36 +157,25 @@ def download_track(url: str = Query(..., description="Publieke SoundCloud track-
     except SoundCloudError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    clean_url = download_url.split("?")[0].lower()
-    is_hls = clean_url.endswith(".m3u8") or ".m3u8" in clean_url or "/hls" in clean_url
+    try:
+        chunks = stream_audio(download_url)
+        raw_audio = b"".join(chunks)
+    except SoundCloudError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
-    # Content-Length alleen ophalen voor progressive streams (bij HLS m3u8 is dit de playlist-grootte)
-    content_length = None
-    if not is_hls:
-        try:
-            head_resp = req_lib.head(download_url, headers=HEADERS, timeout=TIMEOUT, allow_redirects=True)
-            cl = head_resp.headers.get("content-length")
-            if cl and cl.isdigit():
-                content_length = int(cl)
-        except Exception:
-            pass  # Content-Length is optioneel; stream gaat door zonder
+    extension = info.get("extension", ".mp3")
+    final_audio = embed_metadata(raw_audio, extension, info)
 
     media_type = info.get("media_type", "audio/mpeg")
 
     headers = {
         "Content-Disposition": f'attachment; filename="{info["filename"]}"',
+        "Content-Length": str(len(final_audio)),
         "Cache-Control": "no-cache",
     }
-    if content_length:
-        headers["Content-Length"] = str(content_length)
-
-    try:
-        generator = stream_audio(download_url)
-    except SoundCloudError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
 
     return StreamingResponse(
-        generator,
+        io.BytesIO(final_audio),
         media_type=media_type,
         headers=headers,
     )
