@@ -6,6 +6,7 @@ Alle SoundCloud-aanroepen worden gemockt; er vinden geen echte netwerkverzoeken 
 
 from unittest.mock import MagicMock, patch
 import pytest
+import requests
 
 from backend.soundcloud_service import (
     SoundCloudError,
@@ -285,3 +286,119 @@ def test_stream_audio_progressive():
     with patch("backend.soundcloud_service.requests.get", return_value=mock_resp):
         chunks = list(stream_audio("https://cdn.example.com/audio.mp3"))
         assert chunks == [b"chunk1", b"chunk2"]
+
+
+def test_stream_audio_hls_parallel_ordering():
+    """Verifieert dat HLS-segmenten parallel worden opgehaald en in de exacte volgorde worden samengevoegd."""
+    playlist_m3u8 = (
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:10\n"
+        "#EXTINF:10.0,\n"
+        "https://cf-media.sndcdn.com/seg_0.ts\n"
+        "#EXTINF:10.0,\n"
+        "https://cf-media.sndcdn.com/seg_1.ts\n"
+        "#EXTINF:10.0,\n"
+        "https://cf-media.sndcdn.com/seg_2.ts\n"
+        "#EXTINF:10.0,\n"
+        "https://cf-media.sndcdn.com/seg_3.ts\n"
+        "#EXTINF:10.0,\n"
+        "https://cf-media.sndcdn.com/seg_4.ts\n"
+        "#EXT-X-ENDLIST\n"
+    )
+
+    def mock_get(url, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if "playlist.m3u8" in url:
+            resp.text = playlist_m3u8
+        elif "seg_0.ts" in url:
+            resp.content = b"segment_0_audio"
+        elif "seg_1.ts" in url:
+            resp.content = b"segment_1_audio"
+        elif "seg_2.ts" in url:
+            resp.content = b"segment_2_audio"
+        elif "seg_3.ts" in url:
+            resp.content = b"segment_3_audio"
+        elif "seg_4.ts" in url:
+            resp.content = b"segment_4_audio"
+        else:
+            resp.status_code = 404
+            resp.content = b""
+        return resp
+
+    with patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
+        chunks = list(stream_audio("https://cf-media.sndcdn.com/playlist.m3u8"))
+
+        # Verifieer dat alle segmenten in de exacte volgorde als chunks zijn doorgegeven
+        assert chunks == [
+            b"segment_0_audio",
+            b"segment_1_audio",
+            b"segment_2_audio",
+            b"segment_3_audio",
+            b"segment_4_audio",
+        ]
+        assert b"".join(chunks) == b"segment_0_audiosegment_1_audiosegment_2_audiosegment_3_audiosegment_4_audio"
+
+
+def test_stream_audio_hls_with_init_segment():
+    """Verifieert dat bij fMP4 HLS het init-segment als eerste wordt gestreamd voor de segmenten."""
+    playlist_m3u8 = (
+        "#EXTM3U\n"
+        '#EXT-X-MAP:URI="init.mp4"\n'
+        "#EXTINF:10.0,\n"
+        "seg_0.m4s\n"
+        "#EXTINF:10.0,\n"
+        "seg_1.m4s\n"
+        "#EXT-X-ENDLIST\n"
+    )
+
+    def mock_get(url, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if "playlist.m3u8" in url:
+            resp.text = playlist_m3u8
+        elif "init.mp4" in url:
+            resp.iter_content.return_value = [b"init_fmp4_header"]
+            resp.__enter__.return_value = resp
+            resp.__exit__.return_value = None
+        elif "seg_0.m4s" in url:
+            resp.content = b"m4a_chunk_0"
+        elif "seg_1.m4s" in url:
+            resp.content = b"m4a_chunk_1"
+        return resp
+
+    with patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
+        chunks = list(stream_audio("https://cf-media.sndcdn.com/playlist.m3u8"))
+        assert chunks == [b"init_fmp4_header", b"m4a_chunk_0", b"m4a_chunk_1"]
+        assert b"".join(chunks) == b"init_fmp4_headerm4a_chunk_0m4a_chunk_1"
+
+
+def test_stream_audio_hls_worker_network_error():
+    """Verifieert dat een netwerkfout in een van de worker-threads wordt afgevangen en omgezet in SoundCloudError."""
+    playlist_m3u8 = (
+        "#EXTM3U\n"
+        "#EXTINF:10.0,\n"
+        "seg_0.ts\n"
+        "#EXTINF:10.0,\n"
+        "seg_1.ts\n"
+        "#EXT-X-ENDLIST\n"
+    )
+
+    def mock_get(url, *args, **kwargs):
+        if "playlist.m3u8" in url:
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.text = playlist_m3u8
+            return resp
+        elif "seg_1.ts" in url:
+            raise requests.RequestException("Connection broken by peer")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"seg_0_data"
+        return resp
+
+    with patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
+        with pytest.raises(SoundCloudError) as exc_info:
+            list(stream_audio("https://cf-media.sndcdn.com/playlist.m3u8"))
+        assert "Netwerkfout tijdens streamen van segment" in str(exc_info.value)
