@@ -4,6 +4,7 @@ FastAPI backend voor de SoundCloud Downloader webapp.
 Endpoints:
     GET /api/track?url=...     — Track-metadata ophalen
     GET /api/download?url=...  — Audiobestand streamen (MP3 of M4A)
+    GET /api/search?q=...      — Tracks zoeken op SoundCloud
 """
 
 import requests as req_lib
@@ -16,8 +17,13 @@ try:
         SoundCloudError,
         SoundCloudDRMError,
         get_client_id,
+        get_cached_client_id,
+        reset_client_id as service_reset_client_id,
+        register_reset_callback,
+        register_update_callback,
         get_download_url,
         get_track_info,
+        search_tracks,
         stream_audio,
         HEADERS,
         TIMEOUT,
@@ -27,8 +33,13 @@ except ImportError:
         SoundCloudError,
         SoundCloudDRMError,
         get_client_id,
+        get_cached_client_id,
+        reset_client_id as service_reset_client_id,
+        register_reset_callback,
+        register_update_callback,
         get_download_url,
         get_track_info,
+        search_tracks,
         stream_audio,
         HEADERS,
         TIMEOUT,
@@ -44,17 +55,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Client-ID wordt éénmalig opgehaald bij eerste request (lazy init)
+# Client-ID beheer
 _client_id: str | None = None
 
 
-def _get_cached_client_id() -> str:
+def reset_client_id() -> None:
+    """
+    Maakt de gecachete client_id ongeldig in main en soundcloud_service.
+    """
     global _client_id
-    if _client_id is None:
-        try:
-            _client_id = get_client_id()
-        except SoundCloudError as exc:
-            raise HTTPException(status_code=503, detail=str(exc))
+    _client_id = None
+    service_reset_client_id()
+
+
+def _sync_reset() -> None:
+    global _client_id
+    _client_id = None
+
+
+def _sync_update(cid: str) -> None:
+    global _client_id
+    _client_id = cid
+
+
+register_reset_callback(_sync_reset)
+register_update_callback(_sync_update)
+
+
+def _get_cached_client_id() -> str:
+    """
+    Haalt de actieve client_id op uit cache of vraagt een nieuwe op.
+    """
+    global _client_id
+    if _client_id is not None:
+        return _client_id
+    try:
+        _client_id = get_cached_client_id()
+    except SoundCloudError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     return _client_id
 
 
@@ -149,3 +187,16 @@ def download_track(url: str = Query(..., description="Publieke SoundCloud track-
         media_type=media_type,
         headers=headers,
     )
+
+
+@app.get("/api/search")
+def search(q: str = Query(..., description="Zoekopdracht voor SoundCloud tracks")):
+    """
+    Zoekt tracks op SoundCloud op basis van een zoekopdracht.
+    """
+    client_id = _get_cached_client_id()
+    try:
+        results = search_tracks(q, client_id)
+        return {"results": results}
+    except SoundCloudError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
