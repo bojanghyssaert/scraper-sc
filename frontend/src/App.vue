@@ -13,7 +13,7 @@
     </header>
 
     <!-- ── Invoerkaart ── -->
-    <section class="card">
+    <section class="card input-card" :class="{ 'has-results': searchResults.length > 0 }">
       <!-- Modus-schakelaar: Zoek op naam / Plak URL -->
       <div class="mode-switch">
         <button
@@ -35,7 +35,7 @@
       </div>
 
       <!-- Modus: Zoeken op naam -->
-      <div v-if="inputMode === 'search'" class="input-block">
+      <div v-if="inputMode === 'search'" class="input-block search-input-block">
         <label class="field-label" for="search-input">ZOEKEN OP SOUNDCLOUD</label>
         <div class="input-row">
           <input
@@ -75,7 +75,7 @@
               </button>
             </div>
 
-            <div class="search-list">
+            <div class="search-list" :class="{ 'has-preview': track || playlist }">
               <div
                 v-for="item in searchResults"
                 :key="item.permalink_url"
@@ -879,32 +879,53 @@ function formatDuration(ms) {
 .app {
   width: 100%;
   max-width: 640px;
+  height: 100%;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  min-height: 0;
+  gap: 12px;
 }
 
 /* Header */
-.header { text-align: left; margin-bottom: 8px; }
+.header {
+  flex-shrink: 0;
+  text-align: left;
+  margin-bottom: 2px;
+}
 .logo {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 1.35rem;
+  font-size: 1.3rem;
   font-weight: 700;
   color: var(--text);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
-.subtitle { color: var(--muted); font-size: 0.875rem; }
+.subtitle {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
 
 /* Card */
 .card {
   background: var(--card);
   border-radius: var(--radius);
-  padding: 22px 24px;
+  padding: 18px 20px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
+  min-height: 0;
+}
+
+.input-card {
+  flex-shrink: 0;
+}
+
+.input-card.has-results {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Modus-schakelaar */
@@ -915,6 +936,7 @@ function formatDuration(ms) {
   border-radius: 8px;
   padding: 3px;
   gap: 4px;
+  flex-shrink: 0;
 }
 .mode-btn {
   flex: 1;
@@ -946,21 +968,31 @@ function formatDuration(ms) {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
+}
+
+.search-input-block {
+  flex: 1;
+  min-height: 0;
 }
 
 /* Zoekresultaten */
 .search-results {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: 4px;
+  gap: 8px;
+  margin-top: 2px;
   border-top: 1px solid #333333;
-  padding-top: 14px;
+  padding-top: 10px;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
 }
 .search-results-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 .btn-text {
   background: transparent;
@@ -981,16 +1013,35 @@ function formatDuration(ms) {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 380px;
+  flex: 1;
+  min-height: 0;
+  max-height: min(380px, calc(100vh - 250px));
+  max-height: min(380px, calc(100dvh - 250px));
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: #444444 #242424;
+}
+.search-list.has-preview {
+  flex: 0 1 auto;
+  max-height: min(150px, calc(100vh - 540px));
+  max-height: min(150px, calc(100dvh - 540px));
 }
 .search-list::-webkit-scrollbar {
   width: 6px;
 }
-.search-list::-webkit-scrollbar-thumb {
-  background: #3e3e3e;
+.search-list::-webkit-scrollbar-track {
+  background: #242424;
   border-radius: 4px;
+}
+.search-list::-webkit-scrollbar-thumb {
+  background: #444444;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+.search-list::-webkit-scrollbar-thumb:hover {
+  background: #FF5500;
 }
 
 .search-item {
@@ -1114,12 +1165,14 @@ function formatDuration(ms) {
   letter-spacing: .07em;
   text-transform: uppercase;
   color: var(--accent);
+  flex-shrink: 0;
 }
 
 /* Input row */
 .input-row {
   display: flex;
   gap: 8px;
+  flex-shrink: 0;
 }
 .url-input {
   flex: 1;
@@ -1241,28 +1294,34 @@ function formatDuration(ms) {
 }
 
 /* Preview */
-.preview-card { gap: 18px; }
+.preview-card {
+  gap: 14px;
+  flex-shrink: 0;
+  min-height: 0;
+  padding: 16px 20px;
+}
 .preview {
   display: flex;
-  gap: 16px;
+  gap: 14px;
   align-items: flex-start;
+  flex-shrink: 0;
 }
 .artwork {
-  width: 96px;
-  height: 96px;
+  width: 84px;
+  height: 84px;
   border-radius: 8px;
   object-fit: cover;
   flex-shrink: 0;
 }
 .artwork-placeholder {
-  width: 96px;
-  height: 96px;
+  width: 84px;
+  height: 84px;
   border-radius: 8px;
   background: var(--input-bg);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 2.5rem;
+  font-size: 2.2rem;
   flex-shrink: 0;
 }
 .track-meta { display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
@@ -1361,7 +1420,18 @@ function formatDuration(ms) {
 }
 
 /* Playlist card & tracklist */
-.playlist-card { gap: 18px; }
+.playlist-card {
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px 20px;
+}
+.playlist-card .preview {
+  flex-shrink: 0;
+}
 .badge-playlist-count {
   display: inline-block;
   background: rgba(255, 85, 0, 0.12);
@@ -1376,8 +1446,9 @@ function formatDuration(ms) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid #333333;
+  flex-shrink: 0;
 }
 .selection-status {
   font-size: 0.82rem;
@@ -1392,16 +1463,36 @@ function formatDuration(ms) {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 380px;
+  flex: 1;
+  min-height: 0;
+  max-height: min(380px, calc(100vh - 350px));
+  max-height: min(380px, calc(100dvh - 350px));
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: #444444 #242424;
 }
 .playlist-tracklist::-webkit-scrollbar {
   width: 6px;
 }
-.playlist-tracklist::-webkit-scrollbar-thumb {
-  background: #3e3e3e;
+.playlist-tracklist::-webkit-scrollbar-track {
+  background: #242424;
   border-radius: 4px;
+}
+.playlist-tracklist::-webkit-scrollbar-thumb {
+  background: #444444;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+.playlist-tracklist::-webkit-scrollbar-thumb:hover {
+  background: #FF5500;
+}
+.playlist-card .progress-block {
+  flex-shrink: 0;
+}
+.playlist-card .btn-full {
+  flex-shrink: 0;
 }
 .playlist-item {
   display: flex;
