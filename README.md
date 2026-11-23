@@ -10,7 +10,7 @@ In plaats van standaard HTML-scraping, bootst dit script het gedrag van de Sound
 1. **Client ID Extractie:** Het script doorzoekt de dynamische JavaScript-bestanden van de homepage met RegEx om een actieve sessiesleutel (`client_id`) te vinden.
 2. **Metadata Resolving:** Met behulp van de verborgen interne `/resolve` API wordt de openbare track-URL omgezet in nuttige metadata (JSON).
 3. **Stream Filtering:** Het script filtert de JSON-data op het `progressive` audio-protocol (standaard MP3) om complexe HLS-streams te vermijden.
-4. **Binaire Download:** De audiostroom wordt binnengehaald en direct als `.mp3` weggeschreven op de schijf.
+4. **Streaming Download:** De audiostroom wordt in chunks gestreamd (`iter_content`) en direct naar de schijf weggeschreven om geheugenbelasting te voorkomen.
 
 ## 🚀 Installatie en Setup
 
@@ -40,13 +40,18 @@ Zorg dat je **Python 3.x** op je systeem hebt geïnstalleerd.
 
 ## 💻 Gebruik
 
-Start het script via de command line:
+Start de applicatie via de command line:
 
 ```bash
-python scraper.py
+python src/scraper.py
 ```
 
-Het script zal automatisch naar de benodigde `client_id` zoeken. Zodra deze is gevonden, zal het vragen om een SoundCloud link. Plak een geldige track-URL en de download begint vanzelf. Het `.mp3` bestand wordt opgeslagen in dezelfde map.
+1. Bij het opstarten zoekt de applicatie automatisch naar een actieve `client_id` op SoundCloud.
+2. Vervolgens opent de grafische interface (Tkinter GUI):
+   - Plak een geldige SoundCloud track-URL in het invoerveld.
+   - Klik op de knop **"Download MP3"**.
+   - Kies in het dialoogvenster de gewenste opslagmap.
+3. De download wordt veilig in een achtergrondthread uitgevoerd via streaming chunks, terwijl de voortgangsstatus live in het venster zichtbaar is. Na afronding verschijnt een melding en wordt het invoerveld automatisch gewist.
 
 ## ⚠️ Disclaimer
 
