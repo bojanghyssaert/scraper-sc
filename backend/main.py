@@ -11,15 +11,26 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from soundcloud_service import (
-    SoundCloudError,
-    get_client_id,
-    get_download_url,
-    get_track_info,
-    stream_audio,
-    HEADERS,
-    TIMEOUT,
-)
+try:
+    from backend.soundcloud_service import (
+        SoundCloudError,
+        get_client_id,
+        get_download_url,
+        get_track_info,
+        stream_audio,
+        HEADERS,
+        TIMEOUT,
+    )
+except ImportError:
+    from soundcloud_service import (
+        SoundCloudError,
+        get_client_id,
+        get_download_url,
+        get_track_info,
+        stream_audio,
+        HEADERS,
+        TIMEOUT,
+    )
 
 app = FastAPI(title="SoundCloud Downloader API", version="1.0.0")
 
@@ -81,19 +92,27 @@ def download_track(url: str = Query(..., description="Publieke SoundCloud track-
 
     try:
         info = get_track_info(url, client_id)
-        download_url = get_download_url(info["stream_url"], client_id)
+        download_url = get_download_url(
+            info["stream_url"],
+            client_id,
+            info.get("track_authorization")
+        )
     except SoundCloudError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Content-Length ophalen voor voortgangsbalk in de frontend
+    clean_url = download_url.split("?")[0].lower()
+    is_hls = clean_url.endswith(".m3u8") or ".m3u8" in clean_url or "/hls" in clean_url
+
+    # Content-Length alleen ophalen voor progressive streams (bij HLS m3u8 is dit de playlist-grootte)
     content_length = None
-    try:
-        head_resp = req_lib.head(download_url, headers=HEADERS, timeout=TIMEOUT)
-        cl = head_resp.headers.get("content-length")
-        if cl and cl.isdigit():
-            content_length = int(cl)
-    except Exception:
-        pass  # Content-Length is optioneel; stream gaat door zonder
+    if not is_hls:
+        try:
+            head_resp = req_lib.head(download_url, headers=HEADERS, timeout=TIMEOUT)
+            cl = head_resp.headers.get("content-length")
+            if cl and cl.isdigit():
+                content_length = int(cl)
+        except Exception:
+            pass  # Content-Length is optioneel; stream gaat door zonder
 
     headers = {
         "Content-Disposition": f'attachment; filename="{info["filename"]}"',

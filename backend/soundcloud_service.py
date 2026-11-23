@@ -6,6 +6,7 @@ track-metadata en de download-URL — zonder enige GUI-afhankelijkheid.
 """
 
 import re
+import urllib.parse
 import requests
 
 HEADERS = {
@@ -113,17 +114,38 @@ def get_track_info(track_url: str, client_id: str) -> dict:
     filename = f"{safe_artist} - {safe_title}.mp3" if safe_artist else f"{safe_title}.mp3"
     filename = filename or "track.mp3"
 
-    # Zoek progressive (MP3) stream URL
+    # Zoek eerst naar progressive stream met audio/mpeg, val terug op HLS met audio/mpeg
+    transcodings = data.get("media", {}).get("transcodings", [])
     stream_url = None
-    for transcoding in data.get("media", {}).get("transcodings", []):
-        if transcoding.get("format", {}).get("protocol") == "progressive":
+    stream_protocol = None
+
+    # 1. Progressive met audio/mpeg
+    for transcoding in transcodings:
+        fmt = transcoding.get("format", {})
+        protocol = fmt.get("protocol")
+        mime = fmt.get("mime_type", "")
+        if protocol == "progressive" and mime == "audio/mpeg":
             stream_url = transcoding.get("url")
+            stream_protocol = "progressive"
             break
+
+    # 2. HLS met audio/mpeg
+    if not stream_url:
+        for transcoding in transcodings:
+            fmt = transcoding.get("format", {})
+            protocol = fmt.get("protocol")
+            mime = fmt.get("mime_type", "")
+            if protocol == "hls" and mime == "audio/mpeg":
+                stream_url = transcoding.get("url")
+                stream_protocol = "hls"
+                break
 
     if not stream_url:
         raise SoundCloudError(
             "Geen MP3-stream beschikbaar voor dit nummer (mogelijk DRM-beschermd)."
         )
+
+    track_authorization = data.get("track_authorization")
 
     return {
         "title": title,
@@ -132,22 +154,31 @@ def get_track_info(track_url: str, client_id: str) -> dict:
         "duration_ms": duration_ms,
         "filename": filename,
         "stream_url": stream_url,
+        "stream_protocol": stream_protocol,
+        "track_authorization": track_authorization,
     }
 
 
-def get_download_url(stream_url: str, client_id: str) -> str:
+def get_download_url(
+    stream_url: str,
+    client_id: str,
+    track_authorization: str | None = None
+) -> str:
     """
     Wisselt de stream-URL in voor de directe CDN-downloadlink.
 
     Returns:
-        De CDN-URL van het MP3-bestand.
+        De CDN-URL van het MP3-bestand of HLS m3u8 playlist.
 
     Raises:
         SoundCloudError: Bij netwerk- of API-fouten.
     """
-    auth_url = f"{stream_url}?client_id={client_id}"
+    params = {"client_id": client_id}
+    if track_authorization:
+        params["track_authorization"] = track_authorization
+
     try:
-        resp = requests.get(auth_url, headers=HEADERS, timeout=TIMEOUT)
+        resp = requests.get(stream_url, params=params, headers=HEADERS, timeout=TIMEOUT)
         resp.raise_for_status()
         download_url = resp.json().get("url")
     except requests.RequestException as exc:
@@ -164,6 +195,7 @@ def get_download_url(stream_url: str, client_id: str) -> str:
 def stream_audio(download_url: str):
     """
     Generator die het audiobestand in chunks van 64 KB streamt.
+    Ondersteunt zowel directe progressive MP3-bestanden als HLS (.m3u8) streams.
 
     Yields:
         Bytes-chunks van het MP3-bestand.
@@ -171,16 +203,54 @@ def stream_audio(download_url: str):
     Raises:
         SoundCloudError: Bij netwerkfouten tijdens het streamen.
     """
-    try:
-        with requests.get(
-            download_url, headers=HEADERS, stream=True, timeout=TIMEOUT
-        ) as resp:
-            if resp.status_code != 200:
-                raise SoundCloudError(
-                    f"Download mislukt: HTTP {resp.status_code}."
-                )
-            for chunk in resp.iter_content(chunk_size=1024 * 64):
-                if chunk:
-                    yield chunk
-    except requests.RequestException as exc:
-        raise SoundCloudError(f"Netwerkfout tijdens streamen: {exc}") from exc
+    clean_url = download_url.split("?")[0].lower()
+    is_hls = clean_url.endswith(".m3u8") or ".m3u8" in clean_url or "/hls" in clean_url
+
+    if is_hls:
+        try:
+            m3u8_resp = requests.get(download_url, headers=HEADERS, timeout=TIMEOUT)
+            m3u8_resp.raise_for_status()
+            playlist_text = m3u8_resp.text
+        except requests.RequestException as exc:
+            raise SoundCloudError(f"Kan HLS playlist niet ophalen: {exc}") from exc
+
+        lines = [line.strip() for line in playlist_text.splitlines() if line.strip()]
+
+        # Filter alle regels die niet met '#' beginnen (segment URLs)
+        segment_urls = [
+            urllib.parse.urljoin(download_url, line)
+            for line in lines
+            if not line.startswith("#")
+        ]
+
+        if not segment_urls:
+            raise SoundCloudError("Geen segmenten gevonden in HLS playlist.")
+
+        # Stream elk segment achter elkaar door in chunks
+        for seg_url in segment_urls:
+            try:
+                with requests.get(seg_url, headers=HEADERS, stream=True, timeout=TIMEOUT) as seg_resp:
+                    if seg_resp.status_code == 200:
+                        for chunk in seg_resp.iter_content(chunk_size=1024 * 64):
+                            if chunk:
+                                yield chunk
+                    else:
+                        raise SoundCloudError(
+                            f"Fout bij downloaden van HLS segment: HTTP {seg_resp.status_code}"
+                        )
+            except requests.RequestException as exc:
+                raise SoundCloudError(f"Netwerkfout tijdens streamen van segment: {exc}") from exc
+    else:
+        try:
+            with requests.get(
+                download_url, headers=HEADERS, stream=True, timeout=TIMEOUT
+            ) as resp:
+                if resp.status_code != 200:
+                    raise SoundCloudError(
+                        f"Download mislukt: HTTP {resp.status_code}."
+                    )
+                for chunk in resp.iter_content(chunk_size=1024 * 64):
+                    if chunk:
+                        yield chunk
+        except requests.RequestException as exc:
+            raise SoundCloudError(f"Netwerkfout tijdens streamen: {exc}") from exc
