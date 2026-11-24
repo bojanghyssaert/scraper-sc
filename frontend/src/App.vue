@@ -217,7 +217,7 @@
               id="format-select"
               v-model="selectedFormatId"
               class="format-select"
-              :disabled="downloading"
+              :disabled="downloading || downloadingZip"
             >
               <option v-for="fmt in track.formats" :key="fmt.id" :value="fmt.id">
                 {{ fmt.label }} ({{ fmt.extension }})
@@ -259,7 +259,7 @@
                 id="normalize-toggle-track"
                 type="checkbox"
                 v-model="normalizeAudio"
-                :disabled="downloading"
+                :disabled="downloading || downloadingZip"
                 class="toggle-checkbox"
               />
               <span class="toggle-slider"></span>
@@ -271,7 +271,7 @@
         <button
           class="btn btn-accent btn-full"
           @click="downloadTrack"
-          :disabled="downloading"
+          :disabled="downloading || downloadingZip"
         >
           <span v-if="downloading" class="spinner"></span>
           <span v-else>⬇️ Download {{ downloadButtonFormat }}</span>
@@ -315,7 +315,7 @@
             type="button"
             class="btn btn-secondary btn-sm"
             @click="toggleSelectAll"
-            :disabled="downloadingZip || downloadableTracksCount === 0"
+            :disabled="downloadingZip || downloading || downloadableTracksCount === 0"
           >
             {{ allSelected ? 'Deselecteer alles' : 'Alles selecteren' }}
           </button>
@@ -334,7 +334,7 @@
               <input
                 type="checkbox"
                 :checked="selectedTrackUrls.has(t.url)"
-                :disabled="t.is_drm || downloadingZip"
+                :disabled="t.is_drm || downloadingZip || downloading"
                 @change="toggleTrackSelection(t.url)"
                 :title="t.is_drm ? 'DRM-beveiligd: kan niet gedownload worden' : 'Selecteren voor download'"
                 class="track-checkbox"
@@ -374,7 +374,7 @@
                 id="normalize-toggle-playlist"
                 type="checkbox"
                 v-model="normalizeAudio"
-                :disabled="downloadingZip"
+                :disabled="downloadingZip || downloading"
                 class="toggle-checkbox"
               />
               <span class="toggle-slider"></span>
@@ -386,7 +386,7 @@
         <button
           class="btn btn-accent btn-full"
           @click="downloadPlaylistZip"
-          :disabled="selectedTrackUrls.size === 0 || downloadingZip"
+          :disabled="selectedTrackUrls.size === 0 || downloadingZip || downloading"
         >
           <span v-if="downloadingZip" class="spinner"></span>
           <span v-else>📦 Download selectie als .zip ({{ selectedTrackUrls.size }} {{ selectedTrackUrls.size === 1 ? 'track' : 'tracks' }})</span>
@@ -718,7 +718,7 @@ async function fetchTrack() {
 
 // ── Batch download als .zip ──
 async function downloadPlaylistZip() {
-  if (!playlist.value || selectedTrackUrls.value.size === 0) return
+  if (downloadingZip.value || downloading.value || !playlist.value || selectedTrackUrls.value.size === 0) return
 
   downloadingZip.value = true
   zipError.value = ''
@@ -801,7 +801,7 @@ async function downloadPlaylistZip() {
 
 // ── Download ──
 async function downloadTrack() {
-  if (!track.value) return
+  if (downloading.value || downloadingZip.value || !track.value) return
   downloading.value = true
   downloadError.value = ''
   downloadSuccess.value = ''

@@ -79,7 +79,7 @@ def test_get_track_info_auto_refresh_on_401():
 
     mock_200_stream = MagicMock()
     mock_200_stream.status_code = 200
-    mock_200_stream.json.return_value = {"url": "https://cdn.example.com/stream.mp3"}
+    mock_200_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/stream.mp3"}
 
     # Volgorde:
     # 1. /resolve met verlopen client_id -> 401
@@ -126,7 +126,7 @@ def test_get_track_info_auto_refresh_on_403():
 
     mock_200_stream = MagicMock()
     mock_200_stream.status_code = 200
-    mock_200_stream.json.return_value = {"url": "https://cdn.example.com/stream2.mp3"}
+    mock_200_stream.json.return_value = {"url": "https://cf-media.sndcdn.com/stream2.mp3"}
 
     with patch("backend.soundcloud_service.get_client_id", return_value="fresh_id_403") as mock_get_cid, \
          patch("backend.soundcloud_service.requests.get", side_effect=[mock_403, mock_200_resolve, mock_200_stream]):
@@ -420,7 +420,7 @@ def test_stream_audio_progressive():
     mock_resp.__exit__.return_value = None
 
     with patch("backend.soundcloud_service.requests.get", return_value=mock_resp):
-        chunks = list(stream_audio("https://cdn.example.com/audio.mp3"))
+        chunks = list(stream_audio("https://cf-media.sndcdn.com/audio.mp3"))
         assert chunks == [b"chunk1", b"chunk2"]
 
 
@@ -1234,7 +1234,7 @@ def test_convert_m4a_to_mp3_mocked_success():
     from pathlib import Path
     temp_dirs_created = []
 
-    def fake_subprocess_run(cmd, check, capture_output):
+    def fake_subprocess_run(cmd, check=True, capture_output=True, *args, **kwargs):
         out_path = Path(cmd[-1])
         temp_dirs_created.append(out_path.parent)
         out_path.write_bytes(b"\xff\xfb\x90\x64" + b"mocked_mp3_data")
@@ -1372,7 +1372,7 @@ def test_normalize_audio_mp3_success():
     from pathlib import Path
     temp_dirs_created = []
 
-    def fake_subprocess_run(cmd, check, capture_output):
+    def fake_subprocess_run(cmd, check=True, capture_output=True, *args, **kwargs):
         assert "-af" in cmd
         loudnorm_idx = cmd.index("-af")
         assert cmd[loudnorm_idx + 1] == "loudnorm=I=-14:TP=-1.5:LRA=11"
@@ -1404,7 +1404,7 @@ def test_normalize_audio_wav_lossless():
     """Verifieert dat lossless .wav bestanden hun eigen codec en extensie behouden."""
     from pathlib import Path
 
-    def fake_subprocess_run(cmd, check, capture_output):
+    def fake_subprocess_run(cmd, check=True, capture_output=True, *args, **kwargs):
         assert "-af" in cmd
         assert cmd[cmd.index("-af") + 1] == "loudnorm=I=-14:TP=-1.5:LRA=11"
         assert "-acodec" in cmd
@@ -1423,7 +1423,7 @@ def test_normalize_audio_flac_lossless():
     """Verifieert dat lossless .flac bestanden hun eigen codec en extensie behouden."""
     from pathlib import Path
 
-    def fake_subprocess_run(cmd, check, capture_output):
+    def fake_subprocess_run(cmd, check=True, capture_output=True, *args, **kwargs):
         assert "-af" in cmd
         assert cmd[cmd.index("-af") + 1] == "loudnorm=I=-14:TP=-1.5:LRA=11"
         assert "-acodec" in cmd
@@ -1442,7 +1442,7 @@ def test_normalize_audio_m4a_to_mp3_single_step():
     """Verifieert dat conversie van M4A naar MP3 en normalisatie in één enkele FFmpeg-stap plaatsvindt."""
     from pathlib import Path
 
-    def fake_subprocess_run(cmd, check, capture_output):
+    def fake_subprocess_run(cmd, check=True, capture_output=True, *args, **kwargs):
         assert "-af" in cmd
         assert cmd[cmd.index("-af") + 1] == "loudnorm=I=-14:TP=-1.5:LRA=11"
         assert "-acodec" in cmd
