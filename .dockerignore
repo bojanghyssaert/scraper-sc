@@ -1,0 +1,41 @@
+# Versiebeheer
+.git
+.gitignore
+
+# Python virtuele omgevingen
+venv/
+.venv/
+
+# Logbestanden (via volume gemount)
+logs/
+
+# Frontend build artifacts en dependencies
+frontend/node_modules/
+frontend/dist/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Omgevingsvariabelen & geheimen
+.env
+.env.local
+.env.*.local
+
+# Gedownloade mediabestanden
+*.mp3
+*.m4a
+*.wav
+*.zip
+
+# IDE / editor bestanden
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Agent / skill-bestanden
+.agent/
