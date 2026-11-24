@@ -59,6 +59,7 @@ try:
         download_tracks_as_zip,
         embed_metadata,
         convert_m4a_to_mp3,
+        normalize_audio,
         HEADERS,
         TIMEOUT,
     )
@@ -78,6 +79,7 @@ except ImportError:
         download_tracks_as_zip,
         embed_metadata,
         convert_m4a_to_mp3,
+        normalize_audio,
         HEADERS,
         TIMEOUT,
     )
@@ -234,10 +236,11 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
 def download_track(
     url: str = Query(..., description="Publieke SoundCloud track-URL"),
     format_id: str | None = Query(None, description="ID van het gewenste audioformaat (bijv. mp3, m4a, original)"),
+    normalize: bool = Query(False, description="Automatische volume-normalisatie (-14 LUFS) toepassen"),
 ):
     """
     Streamt het audiobestand met metadata en accurate Content-Disposition en Content-Length headers.
-    Ondersteunt optionele format_id queryparameter.
+    Ondersteunt optionele format_id en normalize queryparameters.
     """
     client_id = _get_cached_client_id()
 
@@ -263,13 +266,23 @@ def download_track(
     except SoundCloudError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    if info.get("is_m4a") or info.get("format_id") == "m4a":
+    is_m4a = bool(info.get("is_m4a") or info.get("format_id") == "m4a")
+    extension = info.get("extension", ".mp3")
+
+    if is_m4a:
         try:
-            raw_audio = convert_m4a_to_mp3(raw_audio)
+            if normalize:
+                raw_audio = normalize_audio(raw_audio, extension=".m4a", target_extension=".mp3")
+            else:
+                raw_audio = convert_m4a_to_mp3(raw_audio)
+        except SoundCloudError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+    elif normalize:
+        try:
+            raw_audio = normalize_audio(raw_audio, extension=extension)
         except SoundCloudError as exc:
             raise HTTPException(status_code=500, detail=str(exc))
 
-    extension = info.get("extension", ".mp3")
     final_audio = embed_metadata(raw_audio, extension, info)
 
     media_type = info.get("media_type", "audio/mpeg")
@@ -362,6 +375,7 @@ def search(
 class DownloadZipRequest(BaseModel):
     playlist_title: str = Field(..., description="Titel van de afspeellijst of het album")
     track_urls: list[str] = Field(..., description="Lijst van SoundCloud track-URLs om te downloaden")
+    normalize: bool = Field(False, description="Automatische volume-normalisatie (-14 LUFS) toepassen")
 
 
 @app.post("/api/download-zip")
@@ -369,13 +383,18 @@ def download_zip(payload: DownloadZipRequest):
     """
     Downloadt geselecteerde tracks van een playlist, voorziet ze van metadata-tags,
     bundelt ze in een .zip-archief en retourneert dit via StreamingResponse.
+    Ondersteunt optionele volume-normalisatie per track.
     """
     if not payload.track_urls:
         raise HTTPException(status_code=400, detail="Geen tracks geselecteerd voor download.")
 
     client_id = _get_cached_client_id()
     try:
-        zip_bytes = download_tracks_as_zip(payload.track_urls, client_id)
+        zip_bytes = download_tracks_as_zip(
+            payload.track_urls,
+            client_id,
+            normalize=payload.normalize,
+        )
     except SoundCloudError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
