@@ -18,7 +18,8 @@ import requests as req_lib
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -459,3 +460,42 @@ def download_zip(payload: DownloadZipRequest):
         media_type="application/zip",
         headers=headers,
     )
+
+
+@app.get("/api/health")
+def health_check():
+    """
+    Eenvoudige healthcheck voor Docker en monitoring.
+    Geeft {"status": "ok"} terug wanneer de service bereikbaar is.
+    """
+    return {"status": "ok"}
+
+
+# ── Statische frontend serveren (alleen in Docker/productie) ──────────────────
+# Wanneer frontend/dist bestaat (productie Docker-build), serveert de backend
+# de Vue SPA. Alle /api/*-routes hebben altijd voorrang.
+_FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+
+if _FRONTEND_DIST.is_dir():
+    # Statische assets (JS, CSS, afbeeldingen)
+    app.mount(
+        "/assets",
+        StaticFiles(directory=str(_FRONTEND_DIST / "assets")),
+        name="assets",
+    )
+
+    @app.get("/")
+    def serve_index():
+        """Serveert de Vue SPA index.html op de root-URL."""
+        return FileResponse(str(_FRONTEND_DIST / "index.html"))
+
+    @app.get("/{full_path:path}")
+    def serve_spa(full_path: str):
+        """
+        Catch-all voor client-side routing: stuurt alle niet-API-paden
+        terug naar index.html zodat Vue Router kan overnemen.
+        """
+        requested = _FRONTEND_DIST / full_path
+        if requested.is_file():
+            return FileResponse(str(requested))
+        return FileResponse(str(_FRONTEND_DIST / "index.html"))

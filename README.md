@@ -19,6 +19,32 @@ Een modern, educatief full-stack project om SoundCloud-tracks en afspeellijsten 
 
 ---
 
+## 🐳 Draaien met Docker (Windows, macOS & Linux)
+
+De eenvoudigste manier om de applicatie op **elk besturingssysteem** te starten is via Docker. Zowel de frontend als de backend draaien dan in één container.
+
+**Vereisten:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows / macOS) of Docker Engine (Linux).
+
+### Starten
+
+```bash
+docker compose up --build
+```
+
+De applicatie is daarna direct bereikbaar op **http://localhost:8000**.  
+Logs worden automatisch weggeschreven naar de lokale `./logs/` map.
+
+### Afsluiten
+
+```bash
+docker compose down
+```
+
+> [!TIP]
+> Na de eerste build kun je `--build` weglaten voor een snellere herstart: `docker compose up`.
+
+---
+
 ## ⚡ Snelstarten op Windows (Één-klik)
 
 Voor Windows is er een gebruiksvriendelijk start- en stopmechanisme beschikbaar:

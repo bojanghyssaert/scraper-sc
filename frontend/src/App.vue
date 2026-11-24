@@ -423,7 +423,9 @@
 import { ref, computed, watch } from 'vue'
 import AudioPlayer from './components/AudioPlayer.vue'
 
-const API = 'http://localhost:8000'
+// In Docker (VITE_API_BASE_URL="") lopen alle requests relatief via /api/*.
+// Lokaal (VITE_API_BASE_URL niet gezet) gaat alles naar http://localhost:8000.
+const API = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 
 const inputMode         = ref('search')
 const searchQuery       = ref('')

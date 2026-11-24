@@ -1,0 +1,9 @@
+services:
+  soundcloud-scraper:
+    build: .
+    container_name: soundcloud-scraper
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
