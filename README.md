@@ -1,173 +1,129 @@
-# 🎵 SoundCloud Downloader — Full-stack webapp
+# 🎵 SoundCloud Scraper & Downloader — Full-Stack Webapp
 
-Educatief full-stack project dat SoundCloud-tracks als MP3 downloadt via API reverse engineering. Bestaat uit een **Python FastAPI-backend** en een **Vue 3 + Vite-frontend** met een moderne, donkere SoundCloud-stijl UI.
+Een modern, educatief full-stack project om SoundCloud-tracks en afspeellijsten te doorzoeken, te beluisteren en op te slaan via API reverse-engineering. Bestaat uit een robuuste **Python FastAPI-backend** en een dynamische **Vue 3 + Vite-frontend** met een strak donker SoundCloud-thema (`#181818` / `#FF5500`).
 
-*Ontwikkeld als oefenproject voor data-extractie, netwerkanalyse en full-stack webontwikkeling (Toegepaste Informatica).*
-
----
-
-## ⚡ Snelstarten op Windows (Één-klik)
-
-Voor Windows is er een gebruiksvriendelijk één-klik start- en stopmechanisme beschikbaar:
-
-* **🚀 Starten (`scraper-start.bat`):**
-  Dubbelklik op `scraper-start.bat` in Windows Verkenner (of voer `.\scraper-start.ps1` uit in PowerShell). Dit start automatisch zowel de **FastAPI-backend** (poort 8000) als de **Vue-frontend** (poort 5173) in hetzelfde venster en opent direct `http://localhost:5173` in je standaardbrowser zodra alles gereed is.
-* **🛑 Normaal afsluiten:**
-  Druk simpelweg op <kbd>ENTER</kbd> (of <kbd>Ctrl+C</kbd>) in het terminalvenster. Het script beëindigt netjes beide procesbomen inclusief achterliggende child-processen.
-* **🚨 Noodstop (`scraper-stop.bat`):**
-  Heb je het terminalvenster per ongeluk gesloten via het kruisje (`[X]`)? Dubbelklik op `scraper-stop.bat` om eventuele achtergebleven achtergrondprocessen op poort 8000 en 5173 op te sporen en geforceerd af te sluiten.
+*Ontwikkeld als educatief project voor netwerkanalyse, API-engineering, multimediabewerking en full-stack webontwikkeling.*
 
 ---
 
 ## ✨ Functionaliteiten
 
-| Onderdeel | Functionaliteit |
-|---|---|
-| 🔌 **FastAPI backend** | `client_id` automatisch ophalen, track resolven, MP3-stream doorsturen |
-| 🎨 **Moderne donkere UI** | SoundCloud-kleurenpalet (`#181818` / `#FF5500`), Inter-typografie, kaarten-layout |
-| 📋 **Klembord-integratie** | "Plakken"-knop voor directe URL-invoer vanuit klembord |
-| 🔍 **Live Track Preview** | Cover, titel, artiest en speelduur direct na URL-invoer |
-| 📊 **Live voortgangsbalk** | Realtime MB- en percentage-weergave op basis van `Content-Length` |
-| 💾 **Windows Verkenner dialoog** | Native `showSaveFilePicker()` opent de echte Verkenner om de doelmap te kiezen |
-| 🔄 **Automatische fallback** | Standaard browser-download voor browsers zonder `showSaveFilePicker` |
+* **🔍 Zoeken & Directe URL-invoer:** Zoek direct naar SoundCloud-tracks op artiest of titel met automatische suggesties, of voer een specifieke track- of playlist-URL in via het invoerveld of de ingebouwde **Plakken**-knop.
+* **🎧 Track Preview met Ingebouwde Audiospeler:** Bekijk vooraf artwork, tracktitel, artiestnaam en speelduur, en beluister direct een audiofragment via de geïntegreerde SoundCloud-stijl audiospeler voordat je downloadt.
+* **⚡ Automatische HLS/M4A naar MP3-conversie:** Automatische verwerking van onbeveiligde HLS/AAC/M4A- en progressive streams naar universeel afspeelbare MP3-bestanden met behulp van FFmpeg.
+* **🎚️ Optionele Volume-Normalisatie (-14 LUFS):** Schakel met één klik volume-normalisatie in conform de EBU R128 / SoundCloud broadcast-standaard (-14 LUFS geïntegreerd, -1.0 dBTP true peak) voor een consistent volumeniveau zonder vervorming. Keuze wordt lokaal onthouden (`localStorage`).
+* **🏷️ Automatische ID3-Metadata & Cover-Art Tagging:** Automatisch insluiten van ID3v2.3 tags (titel, artiest, album/playlist, jaartal) en HD cover-art direct in het gedownloade MP3-bestand (via `mutagen`).
+* **📦 Playlist Batch-Download als ZIP:** Volledige ondersteuning voor afspeellijsten en sets. Selecteer afzonderlijke tracks met selectievinkjes en download ze gebundeld in een handig `.zip`-archief.
+* **🛡️ Strikte DRM- & Beveiligingsdetectie:** Automatische herkenning en heldere melding bij SoundCloud Go+ / DRM-beveiligde streams (`encrypted-hls`). Beveiligd tegen SSRF en manipulatie via strikte domein- en URL-validatie.
+* **💾 Native Bestandsopslag:** Ondersteunt de moderne browser `showSaveFilePicker()` API om de opslaglocatie direct via Windows Verkenner te kiezen, met een robuuste fallback voor alle browsers.
 
 ---
 
-## ⚙️ Hoe het werkt (Onder de motorkap)
+## ⚡ Snelstarten op Windows (Één-klik)
 
-1. **Client ID Extractie:** De backend doorzoekt de SoundCloud JS-bestanden met RegEx voor een actieve sessiesleutel (`client_id`).
-2. **Metadata Resolving:** Via de `/resolve` API wordt een track-URL omgezet in JSON met titel, artiest, artwork en stream-URL.
-3. **Stream Filtering:** Alleen het `progressive` protocol (MP3) wordt gebruikt; HLS-streams worden vermeden.
-4. **Streaming via FastAPI:** De backend streamt audio-chunks via `StreamingResponse` naar de browser, inclusief `Content-Length` voor de voortgangsbalk.
-5. **Frontend Streaming:** De Vue-app leest de `ReadableStream` chunk voor chunk en schrijft direct naar het gekozen bestand via de File System Access API.
+Voor Windows is er een gebruiksvriendelijk start- en stopmechanisme beschikbaar:
 
----
-
-## 🏗️ Projectstructuur
-
-```
-soundcloud-scraper/
-├── backend/
-│   ├── main.py                  # FastAPI applicatie met /api/track en /api/download
-│   ├── soundcloud_service.py    # SoundCloud logica (geen GUI-afhankelijkheid)
-│   └── tests/                   # Geautomatiseerde backend-tests (pytest)
-├── frontend/
-│   ├── src/
-│   │   ├── App.vue              # Hoofd Vue-component (alles in één)
-│   │   ├── main.js              # Vue app entry point
-│   │   └── style.css            # Globale stijlen (donker thema)
-│   ├── index.html
-│   └── vite.config.js
-├── logs/                        # Gecentraliseerde logbestanden (automatisch aangemaakt, in .gitignore)
-│   ├── error.log                # Backend exceptions, SoundCloudErrors & HTTP-fouten
-│   ├── backend.log              # Uvicorn server- en console-output
-│   └── frontend.log             # Vite dev server- en console-output
-├── src/
-│   └── scraper.py               # Originele Tkinter GUI-versie (standalone)
-├── scraper-start.bat            # Windows Verkenner dubbelklik-starter
-├── scraper-start.ps1            # Hoofdscript voor starten, browser openen en afsluiten
-├── scraper-stop.bat             # Noodstop voor processen op poort 8000 en 5173
-├── requirements.txt             # Python-afhankelijkheden voor de backend
-└── README.md
-```
+1. **🚀 Starten (`scraper-start.bat`):**
+   Dubbelklik op `scraper-start.bat` in Windows Verkenner (of voer `.\scraper-start.ps1` uit in PowerShell). Dit controleert automatisch bezette poorten, start zowel de **FastAPI-backend** (poort 8000) als de **Vue-frontend** (poort 5173) en opent automatisch `http://localhost:5173` in je browser zodra beide gereed zijn.
+2. **🛑 Normaal afsluiten:**
+   Druk simpelweg op <kbd>ENTER</kbd> (of <kbd>Ctrl+C</kbd>) in het geopende terminalvenster. Het script beëindigt netjes alle achterliggende processen.
+3. **🚨 Noodstop (`scraper-stop.bat`):**
+   Mocht een venster geforceerd gesloten zijn, dubbelklik dan op `scraper-stop.bat` om eventuele achtergebleven processen op poort 8000 en 5173 op te sporen en te beëindigen.
 
 ---
 
-## 📋 Logbestanden & Foutopsporing
-
-Alle opstart-, runtime- en API-fouten worden automatisch geregistreerd in de map `logs/`:
-
-* **`logs/error.log`**: Gecentraliseerde Python-backend error-log via `RotatingFileHandler` (max. 1 MB, UTF-8). Bevat alle `SoundCloudError`-meldingen, HTTP 4xx/5xx responses en onverwachte serverexceptions inclusief volledige tracebacks en tijdstempels.
-* **`logs/backend.log`**: Console- en opstartoutput van de FastAPI / Uvicorn backend.
-* **`logs/frontend.log`**: Console- en opstartoutput van de Vue / Vite frontend-ontwikkelserver.
-
-Bij het opstarten via `scraper-start.bat` / `scraper-start.ps1` controleert het script automatisch of poort 8000 of 5173 nog bezet is door een achtergebleven proces en sluit dit direct af. Als een server crasht of niet binnen 10 seconden reageert, toont het script direct de laatste 15 regels uit het desbetreffende logbestand.
-
----
-
-## 🚀 Installatie en Opstarten
+## 🛠️ Handmatige Installatie en Opstarten
 
 ### Vereisten
-
-* **Python 3.10+** (voor `str | None` type-syntax)
+* **Python 3.10+**
 * **Node.js 18+** en **npm**
+* **FFmpeg** (wordt automatisch meegeleverd via het `imageio-ffmpeg` Python-pakket)
 
----
-
-### Stap 1 — Repository klonen
-
+### 1. Repository klonen
 ```bash
 git clone https://github.com/bojanghyssaert/scraper-sc.git
 cd soundcloud-scraper
 ```
 
----
-
-### Stap 2 — Python backend
-
-#### Virtuele omgeving aanmaken en activeren
-
+### 2. Python Backend inrichten
 ```bash
-# Windows
+# Virtuele omgeving aanmaken en activeren
 python -m venv venv
+
+# Windows:
 .\venv\Scripts\activate
 
-# macOS/Linux
-python3 -m venv venv
+# macOS / Linux:
 source venv/bin/activate
-```
 
-#### Afhankelijkheden installeren
-
-```bash
+# Afhankelijkheden installeren
 pip install -r requirements.txt
-```
 
-#### Backend starten
-
-```bash
-# Vanuit de root van het project
+# Backend starten
 uvicorn backend.main:app --reload --port 8000
 ```
+De backend is nu actief op **http://localhost:8000**. Interactieve API-documentatie (Swagger UI) is beschikbaar op **http://localhost:8000/docs**.
 
-De API is nu beschikbaar op **http://localhost:8000**. Documentatie via Swagger UI: **http://localhost:8000/docs**
-
----
-
-### Stap 3 — Vue frontend
-
+### 3. Vue Frontend inrichten
+Open een nieuw terminalvenster:
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-
-De frontend is nu beschikbaar op **http://localhost:5173**
-
-> [!IMPORTANT]
-> Zorg dat de **backend op poort 8000** actief is vóórdat je de frontend opent.
+De webapplicatie is nu bereikbaar via **http://localhost:5173**.
 
 ---
 
-## 💻 Gebruik
+## 🏗️ Projectarchitectuur
 
-1. **Klik op "📋 Plakken"** of typ een SoundCloud track-URL in het invoerveld.
-2. **Klik op "Zoek track"** — de Track Preview verschijnt met cover, titel, artiest en duur.
-3. **Klik op "⬇️ Download MP3"** — het Windows Verkenner-dialoog opent om de opslaglocatie te kiezen.
-4. De **voortgangsbalk** toont live de downloadstatus in MB en percentage.
-5. Na voltooiing verschijnt een bevestigingsbericht.
+```
+soundcloud-scraper/
+├── .agent/skills/               # AI & ontwikkelrichtlijnen (git-flow, quality-assurance)
+├── backend/
+│   ├── main.py                  # FastAPI applicatie, endpoints en request-validatie
+│   ├── soundcloud_service.py    # Scraping, stream-parsing, FFmpeg-conversie, ID3-tagging
+│   └── tests/                   # Uitgebreide geautomatiseerde tests (pytest met mocks)
+│       ├── test_api.py          # API-integratietests
+│       ├── test_security.py     # URL-validatie, SSRF en input sanitization
+│       └── test_soundcloud_service.py # Unit tests voor service, DRM en transcodings
+├── frontend/
+│   ├── public/                  # Statische assets (favicon, SVG iconenset)
+│   ├── src/
+│   │   ├── components/
+│   │   │   └── AudioPlayer.vue  # SoundCloud-stijl HTML5 preview audiospeler
+│   │   ├── App.vue              # Hoofd Vue-component (zoekbalk, preview, playlist & opties)
+│   │   ├── main.js              # Entrypoint van de Vue-applicatie
+│   │   └── style.css            # Donkere styling en layout
+│   ├── index.html
+│   └── vite.config.js
+├── logs/                        # Gecentraliseerde runtime- en foutlogs (in .gitignore)
+├── scraper-start.bat            # Windows 1-klik opstartscript
+├── scraper-start.ps1            # PowerShell orchestration voor achtergrondprocessen
+├── scraper-stop.bat             # Noodstop-script voor poort 8000 & 5173
+├── pytest.ini                   # Pytest configuratie
+├── requirements.txt             # Python-dependencies
+└── README.md
+```
 
 ---
 
-## 🔌 API Referentie
+## 🔌 API Overzicht
 
-| Endpoint | Methode | Parameters | Response |
+| Methode | Endpoint | Omschrijving | Belangrijkste parameters |
 |---|---|---|---|
-| `/api/track` | GET | `url` (string) | JSON: `title`, `artist`, `artwork_url`, `duration_ms`, `filename` |
-| `/api/download` | GET | `url` (string) | MP3 stream (`audio/mpeg`) met `Content-Disposition` en `Content-Length` |
+| `GET` | `/api/search` | Doorzoekt SoundCloud op artiest of titel | `q` (zoekterm), `limit` (optioneel, standaard 8) |
+| `GET` | `/api/track` | Haalt track- of playlist-metadata op | `url` (SoundCloud-URL) |
+| `GET` | `/api/preview` | Streamt direct audio voor de in-browser audiospeler | `url`, `format_id` (optioneel) |
+| `GET` | `/api/download` | Downloadt afzonderlijke track met ID3-tags | `url`, `format_id` (optioneel), `normalize` (bool) |
+| `POST` | `/api/download-zip` | Bundelt geselecteerde playlist-tracks in een ZIP | JSON body: `playlist_title`, `track_urls`, `normalize` |
 
 ---
 
 ## ⚠️ Disclaimer
 
-Dit project is uitsluitend gemaakt voor **educatieve doeleinden** (het bestuderen van netwerkverkeer, API-structuren en full-stack webontwikkeling). Het ongeautoriseerd downloaden van auteursrechtelijk beschermd materiaal is in strijd met de Algemene Voorwaarden van SoundCloud. Gebruik deze tool alleen voor je eigen tracks of audio die onder een vrije licentie (zoals Creative Commons) valt.
+Deze software is uitsluitend ontwikkeld en bedoeld voor **persoonlijke en educatieve doeleinden** (het bestuderen van netwerkverkeer, webapplicatie-architectuur, API reverse engineering en multimedia-transcodering). 
+
+* Deze applicatie **omzeilt geen DRM-beveiliging** of toegangsbeperkingen (SoundCloud Go+ / `encrypted-hls` streams worden strikt geweigerd en geblokkeerd).
+* Gebruik deze tool uitsluitend voor het downloaden van **je eigen audiomateriaal** of audiobestanden die expliciet met toestemming van de maker of onder een vrije licentie (zoals Creative Commons of rechtenvrije downloads) ter beschikking zijn gesteld.
+* Het ongeautoriseerd downloaden van auteursrechtelijk beschermd materiaal is in strijd met de gebruiksvoorwaarden van SoundCloud. De ontwikkelaars aanvaarden geen enkele aansprakelijkheid voor oneigenlijk of onrechtmatig gebruik van deze tool.
