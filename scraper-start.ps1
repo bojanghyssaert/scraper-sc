@@ -18,7 +18,7 @@ if (-not (Test-Path $PythonExe)) {
     Write-Host ""
     Write-Host "Voer de volgende stappen eenmalig uit om de backend in te richten:" -ForegroundColor Yellow
     Write-Host "  python -m venv venv"
-    Write-Host "  .\venv\Scripts\pip install -r requirements.txt"
+    Write-Host "  .\venv\Scripts\pip install -r requirements-dev.txt"
     Write-Host ""
     Read-Host "Druk op ENTER om af te sluiten..."
     exit 1
@@ -100,11 +100,11 @@ try {
             break
         }
 
-        # Controleer backend readiness (FastAPI docs)
+        # Controleer backend readiness via healthcheck
         if (-not $backendReady) {
             try {
-                $bResp = Invoke-WebRequest -Uri "http://127.0.0.1:8000/docs" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
-                if ($bResp.StatusCode -ge 200 -and $bResp.StatusCode -lt 400) {
+                $bResp = Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/health" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
+                if ($bResp.StatusCode -eq 200) {
                     $backendReady = $true
                 }
             } catch { }

@@ -1,6 +1,6 @@
 # 🎵 SoundCloud Scraper & Downloader — Full-Stack Webapp
 
-Een modern, educatief full-stack project om SoundCloud-tracks en afspeellijsten te doorzoeken, te beluisteren en op te slaan via API reverse-engineering. Bestaat uit een robuuste **Python FastAPI-backend** en een dynamische **Vue 3 + Vite-frontend** met een strak donker SoundCloud-thema (`#181818` / `#FF5500`).
+Een modern, educatief full-stack project om SoundCloud-tracks en afspeellijsten te doorzoeken, te beluisteren en op te slaan via API reverse-engineering. Bestaat uit een robuuste, modulaire **Python FastAPI-backend** en een dynamische **Vue 3 + Vite-frontend** met een strak donker SoundCloud-thema (`#181818` / `#FF5500`).
 
 *Ontwikkeld als educatief project voor netwerkanalyse, API-engineering, multimediabewerking en full-stack webontwikkeling.*
 
@@ -19,9 +19,21 @@ Een modern, educatief full-stack project om SoundCloud-tracks en afspeellijsten 
 
 ---
 
+## 🚀 Aan de slag
+
+Er zijn drie manieren om de applicatie te draaien, afhankelijk van je doel:
+
+| Methode | Doelgroep | Voordelen |
+|---|---|---|
+| **Docker Compose** | Iedereen (Windows, macOS, Linux) | Geen installatie van Node.js of Python vereist, 1-klik cross-platform. |
+| **Windows Quickstart Scripts** | Windows lokale ontwikkeling | Hot Module Replacement (HMR) voor Vue en auto-reload voor FastAPI. |
+| **Handmatige Start** | Ontwikkelaars / CI-omgevingen | Volledige controle over virtualenv en npm commando's. |
+
+---
+
 ## 🐳 Draaien met Docker (Windows, macOS & Linux)
 
-De eenvoudigste manier om de applicatie op **elk besturingssysteem** te starten is via Docker. Zowel de frontend als de backend draaien dan in één container.
+De eenvoudigste manier om de applicatie op **elk besturingssysteem** te starten is via Docker. Zowel de frontend als de backend draaien dan in één geoptimaliseerde multi-stage container.
 
 **Vereisten:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows / macOS) of Docker Engine (Linux).
 
@@ -45,25 +57,30 @@ docker compose down
 
 ---
 
-## ⚡ Snelstarten op Windows (Één-klik)
+## ⚡ Snelstarten op Windows (Lokale Ontwikkeling)
 
-Voor Windows is er een gebruiksvriendelijk start- en stopmechanisme beschikbaar:
+Voor lokale Windows-ontwikkeling met actieve code-herlaadfuncties (Hot Reload):
 
-1. **🚀 Starten (`scraper-start.bat`):**
-   Dubbelklik op `scraper-start.bat` in Windows Verkenner (of voer `.\scraper-start.ps1` uit in PowerShell). Dit controleert automatisch bezette poorten, start zowel de **FastAPI-backend** (poort 8000) als de **Vue-frontend** (poort 5173) en opent automatisch `http://localhost:5173` in je browser zodra beide gereed zijn.
-2. **🛑 Normaal afsluiten:**
-   Druk simpelweg op <kbd>ENTER</kbd> (of <kbd>Ctrl+C</kbd>) in het geopende terminalvenster. Het script beëindigt netjes alle achterliggende processen.
-3. **🚨 Noodstop (`scraper-stop.bat`):**
-   Mocht een venster geforceerd gesloten zijn, dubbelklik dan op `scraper-stop.bat` om eventuele achtergebleven processen op poort 8000 en 5173 op te sporen en te beëindigen.
+1. **🚀 Starten (`scraper-start.bat`):**  
+   Dubbelklik op `scraper-start.bat` in Windows Verkenner (of voer `.\scraper-start.ps1` uit in PowerShell). Dit script:
+   - Controleert automatisch of `venv` en `frontend/node_modules` aanwezig zijn.
+   - Ruimt eventueel achtergebleven processen op poort 8000 en 5173 op.
+   - Start de **FastAPI-backend** met auto-reload (`http://localhost:8000`).
+   - Start de **Vite-ontwikkelserver** met Hot Module Replacement (`http://localhost:5173`).
+   - Controleert de readiness via `/api/health` en opent automatisch je browser.
+2. **🛑 Normaal afsluiten:**  
+   Druk op <kbd>ENTER</kbd> (of <kbd>Ctrl+C</kbd>) in het consolevenster om alle achtergrondprocessen netjes te stoppen.
+3. **🚨 Noodstop (`scraper-stop.bat`):**  
+   Mocht een venster geforceerd zijn gesloten, dubbelklik dan op `scraper-stop.bat` om processen op poort 8000 en 5173 direct te beëindigen.
 
 ---
 
 ## 🛠️ Handmatige Installatie en Opstarten
 
 ### Vereisten
-* **Python 3.10+**
-* **Node.js 18+** en **npm**
-* **FFmpeg** (wordt automatisch meegeleverd via het `imageio-ffmpeg` Python-pakket)
+* **Python 3.10+** (Python 3.11 aanbevolen)
+* **Node.js 18+** (Node.js 20 LTS aanbevolen) en **npm**
+* **FFmpeg** (automatisch beschikbaar gesteld via `imageio-ffmpeg` of systeempakket)
 
 ### 1. Repository klonen
 ```bash
@@ -76,19 +93,23 @@ cd soundcloud-scraper
 # Virtuele omgeving aanmaken en activeren
 python -m venv venv
 
-# Windows:
-.\venv\Scripts\activate
+# Windows (PowerShell):
+.\venv\Scripts\Activate.ps1
+
+# Windows (Command Prompt):
+.\venv\Scripts\activate.bat
 
 # macOS / Linux:
 source venv/bin/activate
 
-# Afhankelijkheden installeren
-pip install -r requirements.txt
+# Afhankelijkheden installeren (voor ontwikkeling en testen)
+pip install -r requirements-dev.txt
 
-# Backend starten
+# Backend starten met auto-reload
 uvicorn backend.main:app --reload --port 8000
 ```
-De backend is nu actief op **http://localhost:8000**. Interactieve API-documentatie (Swagger UI) is beschikbaar op **http://localhost:8000/docs**.
+De backend is nu actief op **http://localhost:8000**.  
+Interactieve Swagger API-documentatie is beschikbaar op **http://localhost:8000/docs**.
 
 ### 3. Vue Frontend inrichten
 Open een nieuw terminalvenster:
@@ -101,35 +122,142 @@ De webapplicatie is nu bereikbaar via **http://localhost:5173**.
 
 ---
 
+## 🧪 Geautomatiseerde Tests
+
+Het project beschikt over uitgebreide testsuites voor zowel de backend als de frontend:
+
+### Backend Tests (Python / Pytest)
+
+De backend suite bevat **115 geautomatiseerde tests** die alle security checks, API-routes, scraping, media-conversie en foutafhandeling met mocks valideren:
+
+```bash
+# Volledige testsuite draaien
+pytest
+
+# Met uitgebreide output
+pytest backend/tests/ -v --tb=short
+
+# Syntaxis- en compilatiecontrole
+python -m py_compile backend/main.py backend/soundcloud_service.py
+```
+
+* `backend/tests/test_api.py`: Integratietests voor alle FastAPI endpoints (`/api/search`, `/api/track`, `/api/preview`, `/api/download`, `/api/download-zip`, `/api/health`).
+* `backend/tests/test_security.py`: Valideert beveiliging tegen SSRF, URL-manipulatie, ongeldige SoundCloud-domeinen en path traversal.
+* `backend/tests/test_soundcloud_service.py`: Unit tests voor client ID extractie, track/playlist resolutie, HLS parsing, FFmpeg transcodering, ID3 tags en DRM-detectie.
+
+### Frontend Tests (Vitest & @vue/test-utils)
+
+De frontend suite bevat **33 geautomatiseerde tests** verdeeld over 6 testbestanden:
+
+```bash
+cd frontend
+
+# Eenmalige testrun
+npm test
+
+# Interactieve watch-modus tijdens ontwikkeling
+npm run test:watch
+
+# Productiebuild verifiëren
+npm run build
+```
+
+* `frontend/src/__tests__/api.test.js`: Valideert API-functies, foutafhandeling en de bestandsopslag via `showSaveFilePicker` en fallback.
+* `frontend/src/__tests__/composables.test.js`: Test state management in composables (`useSettings`, `useSearch`, `useTrack`, `useDownload`).
+* `frontend/src/__tests__/AudioPlayer.test.js`: Test audiospeler controls, tijdformattering en audio-element integratie.
+* `frontend/src/__tests__/TrackCard.test.js`: Test rendering van individuele trackkaarten, badges en downloadknoppen.
+* `frontend/src/__tests__/SearchPanel.test.js`: Test zoekbalk, zoekresultatenlijst en suggesties.
+* `frontend/src/__tests__/PlaylistPanel.test.js`: Test selectievinkjes, batch-selectie en zip-download triggers.
+
+---
+
+## 🔄 CI/CD Pipeline (GitHub Actions)
+
+Het project maakt gebruik van GitHub Actions via `.github/workflows/ci.yml`. Bij elke **push** en **pull request** naar de `main` branch worden geautomatiseerd drie parallelle/afhankelijke jobs uitgevoerd:
+
+1. **Backend Tests & Lint (`backend`):**
+   - Draait op `ubuntu-latest` met Python 3.11 en FFmpeg.
+   - Installeert afhankelijkheden via `requirements-dev.txt` met pip caching.
+   - Controleert Python-compilatie (`py_compile`).
+   - Voert alle 115 tests uit via `pytest`.
+2. **Frontend Tests & Build (`frontend`):**
+   - Draait op `ubuntu-latest` met Node.js 20.
+   - Installeert dependencies met `npm ci` en npm caching.
+   - Draait alle 33 component- en unit tests met `npm test`.
+   - Bouwt de productie-assets via `npm run build`.
+3. **Docker Build Validatie (`docker`):**
+   - Bouwt de volledige multi-stage Docker image (`Dockerfile`).
+   - Start een tijdelijke container en verifieert de `/api/health` endpoint.
+
+---
+
 ## 🏗️ Projectarchitectuur
+
+Het project volgt een strikt gescheiden, modulaire architectuur:
 
 ```
 soundcloud-scraper/
-├── .agent/skills/               # AI & ontwikkelrichtlijnen (git-flow, quality-assurance)
+├── .agent/skills/               # AI- & ontwikkelrichtlijnen (git-flow, quality-assurance)
+├── .github/
+│   └── workflows/
+│       └── ci.yml               # GitHub Actions CI/CD pipeline
 ├── backend/
-│   ├── main.py                  # FastAPI applicatie, endpoints en request-validatie
-│   ├── soundcloud_service.py    # Scraping, stream-parsing, FFmpeg-conversie, ID3-tagging
-│   └── tests/                   # Uitgebreide geautomatiseerde tests (pytest met mocks)
-│       ├── test_api.py          # API-integratietests
-│       ├── test_security.py     # URL-validatie, SSRF en input sanitization
-│       └── test_soundcloud_service.py # Unit tests voor service, DRM en transcodings
+│   ├── main.py                  # FastAPI applicatie, endpoints, CORS en middleware
+│   ├── soundcloud_service.py    # Backwards-compatible facade voor de soundcloud package
+│   ├── services/
+│   │   └── soundcloud/          # Modulair SoundCloud-domeinpackage
+│   │       ├── __init__.py      # Centrale export van alle service-functies en classes
+│   │       ├── client.py        # HTTP client, sessiebeheer en Client ID harvesting
+│   │       ├── constants.py     # Regexes, headers, format-typen en stream-constanten
+│   │       ├── downloader.py    # Download-orkestratie, ZIP-bundeling en temporary files
+│   │       ├── exceptions.py    # Specifieke SoundCloud exception-hiërarchie
+│   │       ├── logging_config.py# Gecentraliseerde logging configuratie
+│   │       ├── media.py         # FFmpeg transcodering, volume-normalisatie & ID3 tagging
+│   │       ├── scraper.py       # HTML parsing, API scraping & track/playlist resolutie
+│   │       └── security.py      # SSRF-preventie en domein/URL sanitization
+│   └── tests/                   # Uitgebreide geautomatiseerde pytest-suites
+│       ├── test_api.py          # API endpoint integratietests
+│       ├── test_security.py     # Beveiligingstests (SSRF, URL injection)
+│       └── test_soundcloud_service.py # Unit tests voor service en transcodings
 ├── frontend/
-│   ├── public/                  # Statische assets (favicon, SVG iconenset)
 │   ├── src/
-│   │   ├── components/
-│   │   │   └── AudioPlayer.vue  # SoundCloud-stijl HTML5 preview audiospeler
-│   │   ├── App.vue              # Hoofd Vue-component (zoekbalk, preview, playlist & opties)
-│   │   ├── main.js              # Entrypoint van de Vue-applicatie
-│   │   └── style.css            # Donkere styling en layout
-│   ├── index.html
-│   └── vite.config.js
+│   │   ├── __tests__/           # Vitest component- en unit tests
+│   │   │   ├── api.test.js
+│   │   │   ├── AudioPlayer.test.js
+│   │   │   ├── composables.test.js
+│   │   │   ├── PlaylistPanel.test.js
+│   │   │   ├── SearchPanel.test.js
+│   │   │   └── TrackCard.test.js
+│   │   ├── components/          # Kleine, herbruikbare Vue 3 componenten
+│   │   │   ├── AppHeader.vue    # Navigatiebalk en normalisatie-instelling
+│   │   │   ├── AudioPlayer.vue  # HTML5 audio preview speler
+│   │   │   ├── DrmWarning.vue   # Duidelijke DRM / Go+ waarschuwing
+│   │   │   ├── PlaylistPanel.vue# Afspeellijstweergave en selectiebeheer
+│   │   │   ├── SearchPanel.vue  # Zoekinvoer, suggesties en URL-plakken
+│   │   │   └── TrackCard.vue    # Individuele trackkaart met formats en download
+│   │   ├── composables/         # Gedeelde reactive state en businesslogica
+│   │   │   ├── useDownload.js   # Single track & ZIP batch download logica
+│   │   │   ├── useSearch.js     # Zoekstatus, suggesties en debounce
+│   │   │   ├── useSettings.js   # Normalisatie toggle en persistentie (localStorage)
+│   │   │   └── useTrack.js      # Metadata fetching en playlist selectie
+│   │   ├── services/
+│   │   │   └── api.js           # Gecentraliseerde API-aanroepen en bestandsopslag
+│   │   ├── App.vue              # Slanke orkestratie-component (~140 regels)
+│   │   ├── main.js              # Vue 3 entrypoint
+│   │   └── style.css            # Donkere styling, knoppen, responsive grids
+│   ├── index.html               # Single Page Application HTML shell
+│   ├── package.json             # NPM dependencies & testscripts
+│   └── vite.config.js           # Vite build & Vitest testconfiguratie
 ├── logs/                        # Gecentraliseerde runtime- en foutlogs (in .gitignore)
-├── scraper-start.bat            # Windows 1-klik opstartscript
-├── scraper-start.ps1            # PowerShell orchestration voor achtergrondprocessen
-├── scraper-stop.bat             # Noodstop-script voor poort 8000 & 5173
-├── pytest.ini                   # Pytest configuratie
-├── requirements.txt             # Python-dependencies
-└── README.md
+├── Dockerfile                   # Multi-stage productie Docker image (Node 20 + Python 3.11)
+├── docker-compose.yml           # Eenvoudig opstarten van de containerized app
+├── pytest.ini                   # Pytest runtime configuratie
+├── requirements.txt             # Pinned productie-afhankelijkheden
+├── requirements-dev.txt         # Aanvullende test- en ontwikkeltools
+├── scraper-start.bat            # Windows 1-klik startscript
+├── scraper-start.ps1            # Windows PowerShell orchestrator met healthcheck
+├── scraper-stop.bat             # Windows noodstopscript voor actieve poorten
+└── README.md                    # Projectdocumentatie
 ```
 
 ---
@@ -138,6 +266,7 @@ soundcloud-scraper/
 
 | Methode | Endpoint | Omschrijving | Belangrijkste parameters |
 |---|---|---|---|
+| `GET` | `/api/health` | Healthcheck endpoint voor containers en monitoring | *Geen* |
 | `GET` | `/api/search` | Doorzoekt SoundCloud op artiest of titel | `q` (zoekterm), `limit` (optioneel, standaard 8) |
 | `GET` | `/api/track` | Haalt track- of playlist-metadata op | `url` (SoundCloud-URL) |
 | `GET` | `/api/preview` | Streamt direct audio voor de in-browser audiospeler | `url`, `format_id` (optioneel) |
