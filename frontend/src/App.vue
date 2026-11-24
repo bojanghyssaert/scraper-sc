@@ -13,7 +13,7 @@
     </header>
 
     <!-- ── Invoerkaart ── -->
-    <section class="card input-card" :class="{ 'has-results': searchResults.length > 0 }">
+    <section class="card input-card" :class="{ 'has-results': searchResults.length > 0 && !track && !playlist }">
       <!-- Modus-schakelaar: Zoek op naam / Plak URL -->
       <div class="mode-switch">
         <button
@@ -67,7 +67,7 @@
 
         <!-- Zoekresultatenlijst -->
         <transition name="fade">
-          <div v-if="searchResults.length > 0" class="search-results">
+          <div v-if="searchResults.length > 0 && !track && !playlist" class="search-results">
             <div class="search-results-header">
               <span class="field-label">ZOEKRESULTATEN ({{ searchResults.length }})</span>
               <button type="button" class="btn-text" @click="clearSearch" title="Resultaten wissen">
@@ -75,7 +75,7 @@
               </button>
             </div>
 
-            <div class="search-list" :class="{ 'has-preview': track || playlist }">
+            <div class="search-list">
               <div
                 v-for="item in searchResults"
                 :key="item.permalink_url"
@@ -115,7 +115,7 @@
 
                 <div class="search-action">
                   <span class="search-action-btn">
-                    {{ trackUrl === item.permalink_url && track ? 'Geselecteerd' : 'Kies track' }}
+                    {{ loading && trackUrl === item.permalink_url ? 'Laden...' : (trackUrl === item.permalink_url && track ? 'Geselecteerd' : 'Kies track') }}
                   </span>
                 </div>
               </div>
@@ -197,10 +197,20 @@
 
           <div class="track-meta">
             <div class="track-meta-header">
-              <span class="track-label">TRACK PREVIEW</span>
-              <span v-if="selectedFormat?.id === 'original' || (track.is_artist_download && !selectedFormat)" class="badge-artist-download">
-                ⭐ Officiële artist download
-              </span>
+              <div class="track-meta-header-left">
+                <span class="track-label">TRACK PREVIEW</span>
+                <span v-if="selectedFormat?.id === 'original' || (track.is_artist_download && !selectedFormat)" class="badge-artist-download">
+                  ⭐ Officiële artist download
+                </span>
+              </div>
+              <button
+                type="button"
+                class="btn-text btn-close-preview"
+                @click="closePreview"
+                :title="searchResults.length > 0 && inputMode === 'search' ? 'Sluit preview en toon zoekresultaten' : 'Track preview sluiten'"
+              >
+                {{ searchResults.length > 0 && inputMode === 'search' ? '✕ Terug naar resultaten' : '✕ Sluiten' }}
+              </button>
             </div>
             <h2 class="track-title">{{ track.title }}</h2>
             <p class="track-artist">{{ track.artist }}</p>
@@ -297,8 +307,18 @@
 
           <div class="track-meta">
             <div class="track-meta-header">
-              <span class="track-label">PLAYLIST / ALBUM</span>
-              <span class="badge-playlist-count">📁 {{ playlist.tracks ? playlist.tracks.length : 0 }} nummers</span>
+              <div class="track-meta-header-left">
+                <span class="track-label">PLAYLIST / ALBUM</span>
+                <span class="badge-playlist-count">📁 {{ playlist.tracks ? playlist.tracks.length : 0 }} nummers</span>
+              </div>
+              <button
+                type="button"
+                class="btn-text btn-close-preview"
+                @click="closePreview"
+                :title="searchResults.length > 0 && inputMode === 'search' ? 'Sluit preview en toon zoekresultaten' : 'Playlist sluiten'"
+              >
+                {{ searchResults.length > 0 && inputMode === 'search' ? '✕ Terug naar resultaten' : '✕ Sluiten' }}
+              </button>
             </div>
             <h2 class="track-title">{{ playlist.title }}</h2>
             <p class="track-artist">{{ playlist.artist }}</p>
@@ -540,6 +560,9 @@ async function performSearch() {
   const query = searchQuery.value.trim()
   if (!query) return
 
+  // Sluit eerst een eventuele actieve preview zodat nieuwe zoekresultaten direct zichtbaar zijn
+  closePreview()
+
   // Als er een geldige SoundCloud URL wordt ingevoerd in het zoekveld
   if (isSoundCloudUrl(query)) {
     inputMode.value = 'url'
@@ -572,10 +595,32 @@ async function performSearch() {
 }
 
 function clearSearch() {
+  closePreview()
   searchResults.value = []
   searchQuery.value = ''
   hasSearched.value = false
   searchError.value = ''
+}
+
+// ── Preview sluiten en trackselectie resetten ──
+function closePreview() {
+  if (audioPlayerRef.value) {
+    audioPlayerRef.value.reset()
+  }
+  track.value = null
+  playlist.value = null
+  trackUrl.value = ''
+  fetchError.value = ''
+  drmInfo.value = null
+  downloadError.value = ''
+  downloadSuccess.value = ''
+  progress.value = 0
+  progressText.value = 'Wachten op download...'
+  selectedFormatId.value = ''
+  selectedTrackUrls.value = new Set()
+  zipError.value = ''
+  zipSuccess.value = ''
+  zipProgressText.value = ''
 }
 
 function selectSearchResult(item) {
@@ -588,6 +633,7 @@ function handleSearchPaste(event) {
   const trimmed = pastedText.trim()
   if (isSoundCloudUrl(trimmed)) {
     event.preventDefault()
+    closePreview()
     inputMode.value = 'url'
     trackUrl.value = trimmed
     fetchTrack()
@@ -1071,10 +1117,10 @@ function formatDuration(ms) {
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
-  transition: color 0.15s;
+  transition: color 0.15s ease, background-color 0.15s ease;
 }
 .btn-text:hover {
-  color: var(--text);
+  color: #FF5500;
 }
 
 .search-list {
@@ -1090,11 +1136,6 @@ function formatDuration(ms) {
   padding-right: 4px;
   scrollbar-width: thin;
   scrollbar-color: #444444 #242424;
-}
-.search-list.has-preview {
-  flex: 0 1 auto;
-  max-height: min(150px, calc(100vh - 540px));
-  max-height: min(150px, calc(100dvh - 540px));
 }
 .search-list::-webkit-scrollbar {
   width: 6px;
@@ -1367,12 +1408,15 @@ function formatDuration(ms) {
   flex-shrink: 0;
   min-height: 0;
   padding: 16px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .preview {
   display: flex;
   gap: 14px;
   align-items: flex-start;
   flex-shrink: 0;
+  width: 100%;
 }
 .artwork {
   width: 84px;
@@ -1392,12 +1436,35 @@ function formatDuration(ms) {
   font-size: 2.2rem;
   flex-shrink: 0;
 }
-.track-meta { display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+.track-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
 .track-meta-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.track-meta-header-left {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+.btn-close-preview {
+  margin-left: auto;
+  white-space: nowrap;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .track-label { font-size: .68rem; font-weight: 700; letter-spacing: .07em; color: var(--accent); text-transform: uppercase; }
 .badge-artist-download {
