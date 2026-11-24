@@ -19,6 +19,7 @@ from backend.soundcloud_service import (
     stream_audio,
     embed_metadata,
     convert_m4a_to_mp3,
+    normalize_audio,
     download_tracks_as_zip,
     _cached_client_id,
 )
@@ -1327,5 +1328,186 @@ def test_download_tracks_as_zip_converts_m4a():
             tags = ID3(io.BytesIO(file_bytes))
             assert str(tags.get("TIT2")) == "M4A Zip Track"
             assert str(tags.get("TPE1")) == "M4A Zip Artist"
+
+
+def test_normalize_audio_empty_bytes():
+    """Verifieert dat lege bytes een SoundCloudError oplevert."""
+    with pytest.raises(SoundCloudError, match="Geen audiogegevens ontvangen"):
+        normalize_audio(b"", extension=".mp3")
+
+
+def test_normalize_audio_ffmpeg_not_found():
+    """Verifieert dat ontbreken van FFmpeg een SoundCloudError oplevert."""
+    with patch("shutil.which", return_value=None), \
+         patch("imageio_ffmpeg.get_ffmpeg_exe", return_value=None):
+        with pytest.raises(SoundCloudError, match="FFmpeg executable niet gevonden"):
+            normalize_audio(b"dummy_audio_bytes", extension=".mp3")
+
+
+def test_normalize_audio_called_process_error():
+    """Verifieert dat een FFmpeg-fout (CalledProcessError) netjes leidt tot een SoundCloudError."""
+    import subprocess
+    err = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=["ffmpeg"],
+        stderr=b"Filter loudnorm initialization failed",
+    )
+    with patch("shutil.which", return_value="ffmpeg"), \
+         patch("subprocess.run", side_effect=err):
+        with pytest.raises(SoundCloudError) as exc_info:
+            normalize_audio(b"corrupt_audio", extension=".mp3")
+        assert "Filter loudnorm initialization failed" in str(exc_info.value)
+
+
+def test_normalize_audio_missing_output():
+    """Verifieert dat een SoundCloudError optreedt wanneer FFmpeg geen uitvoerbestand genereert."""
+    with patch("shutil.which", return_value="ffmpeg"), \
+         patch("subprocess.run"):
+        with pytest.raises(SoundCloudError, match="FFmpeg heeft geen output.mp3 bestand gegenereerd"):
+            normalize_audio(b"audio_bytes", extension=".mp3")
+
+
+def test_normalize_audio_mp3_success():
+    """Verifieert dat normalize_audio() de EBU R128 parameters en hoge MP3 bitrate meegeeft."""
+    from pathlib import Path
+    temp_dirs_created = []
+
+    def fake_subprocess_run(cmd, check, capture_output):
+        assert "-af" in cmd
+        loudnorm_idx = cmd.index("-af")
+        assert cmd[loudnorm_idx + 1] == "loudnorm=I=-14:TP=-1.5:LRA=11"
+        assert "-acodec" in cmd
+        assert cmd[cmd.index("-acodec") + 1] == "libmp3lame"
+        assert "-b:a" in cmd
+        assert cmd[cmd.index("-b:a") + 1] == "256k"
+
+        input_path = Path(cmd[cmd.index("-i") + 1])
+        output_path = Path(cmd[-1])
+        assert input_path.suffix == ".mp3"
+        assert output_path.suffix == ".mp3"
+        assert input_path.read_bytes() == b"mp3_raw_audio"
+        temp_dirs_created.append(input_path.parent)
+
+        output_path.write_bytes(b"\xff\xfb\x90\x64" + b"normalized_mp3_data")
+
+    with patch("shutil.which", return_value="ffmpeg"), \
+         patch("subprocess.run", side_effect=fake_subprocess_run):
+        result = normalize_audio(b"mp3_raw_audio", extension=".mp3")
+        assert b"normalized_mp3_data" in result
+
+    # Verifieer dat temp directory direct is opgeruimd
+    for d in temp_dirs_created:
+        assert not d.exists()
+
+
+def test_normalize_audio_wav_lossless():
+    """Verifieert dat lossless .wav bestanden hun eigen codec en extensie behouden."""
+    from pathlib import Path
+
+    def fake_subprocess_run(cmd, check, capture_output):
+        assert "-af" in cmd
+        assert cmd[cmd.index("-af") + 1] == "loudnorm=I=-14:TP=-1.5:LRA=11"
+        assert "-acodec" in cmd
+        assert cmd[cmd.index("-acodec") + 1] == "pcm_s16le"
+        output_path = Path(cmd[-1])
+        assert output_path.suffix == ".wav"
+        output_path.write_bytes(b"RIFF_normalized_wav")
+
+    with patch("shutil.which", return_value="ffmpeg"), \
+         patch("subprocess.run", side_effect=fake_subprocess_run):
+        result = normalize_audio(b"RIFF_raw_wav", extension=".wav")
+        assert result == b"RIFF_normalized_wav"
+
+
+def test_normalize_audio_flac_lossless():
+    """Verifieert dat lossless .flac bestanden hun eigen codec en extensie behouden."""
+    from pathlib import Path
+
+    def fake_subprocess_run(cmd, check, capture_output):
+        assert "-af" in cmd
+        assert cmd[cmd.index("-af") + 1] == "loudnorm=I=-14:TP=-1.5:LRA=11"
+        assert "-acodec" in cmd
+        assert cmd[cmd.index("-acodec") + 1] == "flac"
+        output_path = Path(cmd[-1])
+        assert output_path.suffix == ".flac"
+        output_path.write_bytes(b"fLaC_normalized_flac")
+
+    with patch("shutil.which", return_value="ffmpeg"), \
+         patch("subprocess.run", side_effect=fake_subprocess_run):
+        result = normalize_audio(b"fLaC_raw_flac", extension=".flac")
+        assert result == b"fLaC_normalized_flac"
+
+
+def test_normalize_audio_m4a_to_mp3_single_step():
+    """Verifieert dat conversie van M4A naar MP3 en normalisatie in één enkele FFmpeg-stap plaatsvindt."""
+    from pathlib import Path
+
+    def fake_subprocess_run(cmd, check, capture_output):
+        assert "-af" in cmd
+        assert cmd[cmd.index("-af") + 1] == "loudnorm=I=-14:TP=-1.5:LRA=11"
+        assert "-acodec" in cmd
+        assert cmd[cmd.index("-acodec") + 1] == "libmp3lame"
+        assert "-b:a" in cmd
+        assert cmd[cmd.index("-b:a") + 1] == "256k"
+
+        input_path = Path(cmd[cmd.index("-i") + 1])
+        output_path = Path(cmd[-1])
+        assert input_path.suffix == ".m4a"
+        assert output_path.suffix == ".mp3"
+        output_path.write_bytes(b"single_step_m4a_mp3_normalized")
+
+    with patch("shutil.which", return_value="ffmpeg"), \
+         patch("subprocess.run", side_effect=fake_subprocess_run):
+        result = normalize_audio(b"m4a_input_bytes", extension=".m4a", target_extension=".mp3")
+        assert result == b"single_step_m4a_mp3_normalized"
+
+
+def test_convert_m4a_to_mp3_with_normalize_delegates():
+    """Verifieert dat convert_m4a_to_mp3(..., normalize=True) éénstapstranscodering uitvoert via normalize_audio."""
+    with patch("backend.soundcloud_service.normalize_audio", return_value=b"normalized_converted_mp3") as mock_norm:
+        result = convert_m4a_to_mp3(b"raw_m4a_data", normalize=True)
+        assert result == b"normalized_converted_mp3"
+        mock_norm.assert_called_once_with(b"raw_m4a_data", extension=".m4a", target_extension=".mp3")
+
+
+def test_download_tracks_as_zip_with_normalize():
+    """Verifieert dat download_tracks_as_zip met normalize=True normalize_audio aanroept vóór embed_metadata."""
+    import zipfile
+    import io
+    from mutagen.id3 import ID3
+
+    mock_track_info = {
+        "type": "track",
+        "title": "Normalized Zip Track",
+        "artist": "Zip Artist",
+        "filename": "Zip Artist - Normalized Zip Track.mp3",
+        "extension": ".mp3",
+        "media_type": "audio/mpeg",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_norm_zip",
+        "stream_protocol": "progressive",
+    }
+
+    dummy_raw = b"raw_downloaded_audio"
+    dummy_normalized = b"\xff\xfb\x90\x64" + b"\x00" * 400
+
+    with patch("backend.soundcloud_service.get_track_info", return_value=mock_track_info), \
+         patch("backend.soundcloud_service.get_download_url", return_value="https://cdn.com/stream.mp3"), \
+         patch("backend.soundcloud_service.stream_audio", return_value=iter([dummy_raw])), \
+         patch("backend.soundcloud_service.normalize_audio", return_value=dummy_normalized) as mock_norm:
+
+        zip_data = download_tracks_as_zip(
+            ["https://soundcloud.com/artist/norm-track"],
+            client_id="test_cid",
+            normalize=True,
+        )
+        assert len(zip_data) > 0
+        mock_norm.assert_called_once_with(dummy_raw, extension=".mp3")
+
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+            assert "Zip Artist - Normalized Zip Track.mp3" in zf.namelist()
+            file_bytes = zf.read("Zip Artist - Normalized Zip Track.mp3")
+            tags = ID3(io.BytesIO(file_bytes))
+            assert str(tags.get("TIT2")) == "Normalized Zip Track"
+            assert str(tags.get("TPE1")) == "Zip Artist"
 
 

@@ -247,6 +247,26 @@
           </div>
         </div>
 
+        <!-- Volume-normalisatie schakelaar -->
+        <div class="normalize-block">
+          <label class="toggle-control" for="normalize-toggle-track">
+            <span class="toggle-info">
+              <span class="toggle-icon">🔊</span>
+              <span class="toggle-label">Volume gelijktrekken (-14 LUFS)</span>
+            </span>
+            <span class="toggle-switch">
+              <input
+                id="normalize-toggle-track"
+                type="checkbox"
+                v-model="normalizeAudio"
+                :disabled="downloading"
+                class="toggle-checkbox"
+              />
+              <span class="toggle-slider"></span>
+            </span>
+          </label>
+        </div>
+
         <!-- Download knop -->
         <button
           class="btn btn-accent btn-full"
@@ -342,6 +362,26 @@
           </div>
         </div>
 
+        <!-- Volume-normalisatie schakelaar -->
+        <div class="normalize-block">
+          <label class="toggle-control" for="normalize-toggle-playlist">
+            <span class="toggle-info">
+              <span class="toggle-icon">🔊</span>
+              <span class="toggle-label">Volume gelijktrekken (-14 LUFS)</span>
+            </span>
+            <span class="toggle-switch">
+              <input
+                id="normalize-toggle-playlist"
+                type="checkbox"
+                v-model="normalizeAudio"
+                :disabled="downloadingZip"
+                class="toggle-checkbox"
+              />
+              <span class="toggle-slider"></span>
+            </span>
+          </label>
+        </div>
+
         <!-- Download knop -->
         <button
           class="btn btn-accent btn-full"
@@ -408,6 +448,28 @@ const downloadSuccess   = ref('')
 const progress          = ref(0)
 const progressText      = ref('Wachten op download...')
 const audioPlayerRef    = ref(null)
+
+const STORAGE_KEY_NORMALIZE = 'sc_normalize_volume'
+const getSavedNormalize = () => {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_NORMALIZE)
+    if (saved !== null) {
+      return saved === 'true'
+    }
+  } catch {
+    // Negeer localStorage fouten
+  }
+  return false
+}
+const normalizeAudio    = ref(getSavedNormalize())
+
+watch(normalizeAudio, (newVal) => {
+  try {
+    localStorage.setItem(STORAGE_KEY_NORMALIZE, String(newVal))
+  } catch {
+    // Negeer localStorage fouten
+  }
+})
 
 const previewAudioUrl = computed(() => {
   if (!track.value || !trackUrl.value.trim()) return ''
@@ -676,6 +738,7 @@ async function downloadPlaylistZip() {
       body: JSON.stringify({
         playlist_title: playlist.value.title,
         track_urls: urlsToDownload,
+        normalize: normalizeAudio.value,
       }),
     })
 
@@ -747,9 +810,10 @@ async function downloadTrack() {
 
   const targetUrl = trackUrl.value.trim()
   const formatQuery = selectedFormatId.value ? `&format_id=${encodeURIComponent(selectedFormatId.value)}` : ''
+  const normalizeQuery = `&normalize=${normalizeAudio.value}`
 
   try {
-    const res = await fetch(`${API}/api/download?url=${encodeURIComponent(targetUrl)}${formatQuery}`)
+    const res = await fetch(`${API}/api/download?url=${encodeURIComponent(targetUrl)}${formatQuery}${normalizeQuery}`)
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
       const detailMsg = typeof data.detail === 'string' ? data.detail : ''
@@ -1571,6 +1635,102 @@ function formatDuration(ms) {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+
+/* Volume-normalisatie toggle */
+.normalize-block {
+  background: #242424;
+  border: 1px solid #3D3D3D;
+  border-radius: 8px;
+  padding: 10px 14px;
+  flex-shrink: 0;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.normalize-block:hover {
+  border-color: #555555;
+}
+
+.toggle-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle-icon {
+  font-size: 1.05rem;
+}
+
+.toggle-label {
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.toggle-checkbox {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.toggle-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #3D3D3D;
+  border-radius: 24px;
+  transition: 0.25s ease;
+}
+
+.toggle-slider::before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #FFFFFF;
+  border-radius: 50%;
+  transition: 0.25s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.toggle-checkbox:checked + .toggle-slider {
+  background-color: #FF5500;
+}
+
+.toggle-checkbox:checked + .toggle-slider::before {
+  transform: translateX(20px);
+}
+
+.toggle-checkbox:focus-visible + .toggle-slider {
+  outline: 2px solid #FF5500;
+  outline-offset: 2px;
+}
+
+.toggle-checkbox:disabled + .toggle-slider {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Status */

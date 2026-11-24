@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import app, reset_client_id
-from backend.soundcloud_service import SoundCloudError, SoundCloudDRMError
+from backend.soundcloud_service import SoundCloudError, SoundCloudDRMError, normalize_audio
 
 
 @pytest.fixture
@@ -565,3 +565,149 @@ def test_error_log_file_contains_entries():
     content = ERROR_LOG_FILE.read_text(encoding="utf-8")
     assert "Onverwachte crash in service" in content
     assert "RuntimeError" in content
+
+
+def test_api_download_with_normalize_true_mp3(client):
+    """Verifieert dat GET /api/download?url=...&normalize=true normalize_audio aanroept en 200 retourneert."""
+    mock_info = {
+        "title": "Normalized API Track",
+        "artist": "Normalized API Artist",
+        "filename": "Normalized API Artist - Normalized API Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_norm_api",
+        "stream_protocol": "progressive",
+        "is_m4a": False,
+    }
+
+    raw_audio = b"raw_stream_audio_bytes"
+    normalized_audio = b"\xff\xfb\x90\x64" + b"normalized_api_audio"
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info), \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/audio.mp3"), \
+         patch("backend.main.stream_audio", return_value=iter([raw_audio])), \
+         patch("backend.main.normalize_audio", return_value=normalized_audio) as mock_norm:
+
+        response = client.get("/api/download?url=https://soundcloud.com/artist/norm-track&normalize=true")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mpeg"
+        assert 'attachment; filename="Normalized API Artist - Normalized API Track.mp3"' in response.headers["content-disposition"]
+        mock_norm.assert_called_once_with(raw_audio, extension=".mp3")
+        # De inhoud moet gelijk zijn aan de (met metadata voorziene) genormaliseerde audio
+        assert b"normalized_api_audio" in response.content
+
+
+def test_api_download_with_normalize_true_m4a_single_step(client):
+    """Verifieert dat voor een M4A track normalize_audio in één stap met target_extension=.mp3 wordt aangeroepen."""
+    mock_info = {
+        "title": "M4A Single Step Track",
+        "artist": "Single Step Artist",
+        "filename": "Single Step Artist - M4A Single Step Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_m4a_norm",
+        "stream_protocol": "hls",
+        "format_id": "m4a",
+        "is_m4a": True,
+    }
+
+    raw_m4a = b"raw_m4a_hls_bytes"
+    normalized_mp3 = b"\xff\xfb\x90\x64" + b"single_step_normalized_mp3"
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info), \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/playlist.m3u8"), \
+         patch("backend.main.stream_audio", return_value=iter([raw_m4a])), \
+         patch("backend.main.normalize_audio", return_value=normalized_mp3) as mock_norm, \
+         patch("backend.main.convert_m4a_to_mp3") as mock_convert:
+
+        response = client.get("/api/download?url=https://soundcloud.com/artist/m4a-norm&normalize=true")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mpeg"
+        mock_norm.assert_called_once_with(raw_m4a, extension=".m4a", target_extension=".mp3")
+        mock_convert.assert_not_called()
+        assert b"single_step_normalized_mp3" in response.content
+
+
+def test_api_download_with_normalize_ffmpeg_error(client):
+    """Verifieert dat een FFmpeg-normalisatiefout in /api/download resulteert in HTTP 500."""
+    mock_info = {
+        "title": "Faulty Norm Track",
+        "artist": "Faulty Artist",
+        "filename": "Faulty Artist - Faulty Norm Track.mp3",
+        "media_type": "audio/mpeg",
+        "extension": ".mp3",
+        "stream_url": "https://api-v2.soundcloud.com/media/stream_err",
+        "stream_protocol": "progressive",
+        "is_m4a": False,
+    }
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_id"), \
+         patch("backend.main.get_track_info", return_value=mock_info), \
+         patch("backend.main.get_download_url", return_value="https://cf-media.sndcdn.com/audio.mp3"), \
+         patch("backend.main.stream_audio", return_value=iter([b"audio_bytes"])), \
+         patch("backend.main.normalize_audio", side_effect=SoundCloudError("FFmpeg loudnorm filter crashed")):
+
+        response = client.get("/api/download?url=https://soundcloud.com/artist/faulty-norm&normalize=true")
+        assert response.status_code == 500
+        assert "FFmpeg loudnorm filter crashed" in response.json()["detail"]
+
+
+def test_api_download_zip_with_normalize_true(client):
+    """Verifieert dat POST /api/download-zip met normalize: true de parameter doorgeeft aan download_tracks_as_zip."""
+    import zipfile
+    import io
+
+    dummy_zip_buf = io.BytesIO()
+    with zipfile.ZipFile(dummy_zip_buf, "w") as zf:
+        zf.writestr("Track.mp3", b"normalized_zip_audio")
+    dummy_zip_bytes = dummy_zip_buf.getvalue()
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_cid"), \
+         patch("backend.main.download_tracks_as_zip", return_value=dummy_zip_bytes) as mock_zip:
+
+        payload = {
+            "playlist_title": "Normalized Playlist",
+            "track_urls": [
+                "https://soundcloud.com/artist/track-1",
+            ],
+            "normalize": True,
+        }
+        response = client.post("/api/download-zip", json=payload)
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/zip"
+        assert response.content == dummy_zip_bytes
+        mock_zip.assert_called_once_with(
+            ["https://soundcloud.com/artist/track-1"],
+            "dummy_cid",
+            normalize=True,
+        )
+
+
+def test_api_download_zip_with_normalize_false_default(client):
+    """Verifieert dat POST /api/download-zip zonder normalize-veld standaard normalize=False doorgeeft."""
+    import zipfile
+    import io
+
+    dummy_zip_buf = io.BytesIO()
+    with zipfile.ZipFile(dummy_zip_buf, "w") as zf:
+        zf.writestr("Track.mp3", b"regular_zip_audio")
+    dummy_zip_bytes = dummy_zip_buf.getvalue()
+
+    with patch("backend.main._get_cached_client_id", return_value="dummy_cid"), \
+         patch("backend.main.download_tracks_as_zip", return_value=dummy_zip_bytes) as mock_zip:
+
+        payload = {
+            "playlist_title": "Default Playlist",
+            "track_urls": [
+                "https://soundcloud.com/artist/track-2",
+            ],
+        }
+        response = client.post("/api/download-zip", json=payload)
+        assert response.status_code == 200
+        mock_zip.assert_called_once_with(
+            ["https://soundcloud.com/artist/track-2"],
+            "dummy_cid",
+            normalize=False,
+        )

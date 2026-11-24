@@ -959,14 +959,107 @@ def embed_metadata(audio_bytes: bytes, extension: str, info: dict) -> bytes:
     return audio_bytes
 
 
-def convert_m4a_to_mp3(m4a_bytes: bytes) -> bytes:
+def normalize_audio(
+    audio_bytes: bytes,
+    extension: str,
+    target_extension: str | None = None,
+) -> bytes:
+    """
+    Normaliseert het volume van audio-bytes via FFmpeg met het EBU R128 loudnorm-filter
+    (-af loudnorm=I=-14:TP=-1.5:LRA=11).
+
+    Behoudt voor .mp3 een hoge bitrate (-acodec libmp3lame -b:a 256k) en laat lossless
+    bestanden (.wav, .flac) hun eigen codec/extensie behouden.
+    Wanneer een track van .m4a naar .mp3 moet worden geconverteerd en genormaliseerd,
+    gebeurt dit in één enkele FFmpeg-stap om dubbel hercoderen te voorkomen.
+
+    Args:
+        audio_bytes: Ruwe binaire inhoud van het audiobestand.
+        extension: Extensie van het invoerbestand (bijv. '.mp3', '.m4a', '.wav', '.flac').
+        target_extension: Optionele doel-extensie (bijv. '.mp3' bij conversie vanuit '.m4a').
+
+    Returns:
+        Binaire inhoud van het genormaliseerde audiobestand.
+
+    Raises:
+        SoundCloudError: Als FFmpeg ontbreekt of het normalisatieproces faalt.
+    """
+    if not audio_bytes:
+        raise SoundCloudError("Geen audiogegevens ontvangen voor volume-normalisatie.")
+
+    try:
+        ffmpeg_exe = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:
+        logger.error(f"Fout bij bepalen van FFmpeg-pad: {exc}", exc_info=True)
+        raise SoundCloudError(f"FFmpeg is niet beschikbaar op het systeem: {exc}") from exc
+
+    if not ffmpeg_exe:
+        logger.error("FFmpeg executable niet gevonden via PATH of imageio_ffmpeg.")
+        raise SoundCloudError("FFmpeg executable niet gevonden op het systeem.")
+
+    in_ext = ("." + extension.lstrip(".")).lower() if extension else ".mp3"
+    if target_extension:
+        out_ext = ("." + target_extension.lstrip(".")).lower()
+    elif in_ext in (".m4a", ".mp4", ".aac"):
+        out_ext = ".mp3"
+    else:
+        out_ext = in_ext
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / f"input{in_ext}"
+            output_file = Path(tmpdir) / f"output{out_ext}"
+
+            input_file.write_bytes(audio_bytes)
+
+            cmd = [
+                str(ffmpeg_exe),
+                "-y",
+                "-i",
+                str(input_file),
+                "-vn",
+                "-af",
+                "loudnorm=I=-14:TP=-1.5:LRA=11",
+            ]
+
+            if out_ext == ".mp3":
+                cmd.extend(["-acodec", "libmp3lame", "-b:a", "256k"])
+            elif out_ext == ".flac":
+                cmd.extend(["-acodec", "flac"])
+            elif out_ext == ".wav":
+                cmd.extend(["-acodec", "pcm_s16le"])
+            elif out_ext in (".aiff", ".aif"):
+                cmd.extend(["-acodec", "pcm_s16be"])
+
+            cmd.append(str(output_file))
+
+            subprocess.run(cmd, check=True, capture_output=True)
+
+            if not output_file.exists():
+                raise SoundCloudError(f"FFmpeg heeft geen output{out_ext} bestand gegenereerd.")
+
+            return output_file.read_bytes()
+    except subprocess.CalledProcessError as exc:
+        err_msg = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc)
+        logger.error(f"FFmpeg-normalisatiefout (exit code {exc.returncode}): {err_msg}", exc_info=True)
+        raise SoundCloudError(f"Fout tijdens volume-normalisatie: {err_msg}") from exc
+    except SoundCloudError:
+        raise
+    except Exception as exc:
+        logger.error(f"Onverwachte fout tijdens volume-normalisatie: {exc}", exc_info=True)
+        raise SoundCloudError(f"Onverwachte fout tijdens volume-normalisatie: {exc}") from exc
+
+
+def convert_m4a_to_mp3(m4a_bytes: bytes, normalize: bool = False) -> bytes:
     """
     Converteert M4A/AAC audio-bytes naar een standaard MP3-bestand (256 kbps) via FFmpeg.
     Schrijft de input tijdelijk weg in een TemporaryDirectory om fragmented MP4/HLS-headers
     foutloos te ontleden en ruimt alle tijdelijke bestanden na afloop direct automatisch op.
+    Indien normalize=True wordt het volume tevens genormaliseerd in één enkele FFmpeg-stap.
 
     Args:
         m4a_bytes: Ruwe binaire inhoud van het M4A/AAC audiobestand.
+        normalize: Indien True, pas tevens EBU R128 volume-normalisatie toe.
 
     Returns:
         Binaire inhoud van het geconverteerde MP3-bestand.
@@ -974,6 +1067,9 @@ def convert_m4a_to_mp3(m4a_bytes: bytes) -> bytes:
     Raises:
         SoundCloudError: Als FFmpeg ontbreekt of de audioconversie faalt (wordt gelogd naar error.log).
     """
+    if normalize:
+        return normalize_audio(m4a_bytes, extension=".m4a", target_extension=".mp3")
+
     if not m4a_bytes:
         raise SoundCloudError("Geen audiogegevens ontvangen voor M4A-naar-MP3 conversie.")
 
@@ -1027,10 +1123,16 @@ def convert_m4a_to_mp3(m4a_bytes: bytes) -> bytes:
 def download_tracks_as_zip(
     track_urls: list[str],
     client_id: str | None = None,
+    normalize: bool = False,
 ) -> bytes:
     """
     Downloadt meerdere SoundCloud-tracks, voorziet ze van ID3/MP4 metadata en bundelt
-    ze in een ZIP-archief.
+    ze in een ZIP-archief. Optioneel kan automatische volume-normalisatie worden toegepast.
+
+    Args:
+        track_urls: Lijst van SoundCloud track-URLs.
+        client_id: Optionele actieve client_id.
+        normalize: Of automatische volume-normalisatie (-14 LUFS) moet worden toegepast.
 
     Returns:
         Bytes van het gecomprimeerde ZIP-bestand.
@@ -1059,9 +1161,16 @@ def download_tracks_as_zip(
                 )
             chunks = stream_audio(dl_url)
             raw_audio = b"".join(chunks)
-            if info.get("is_m4a") or info.get("format_id") == "m4a":
-                raw_audio = convert_m4a_to_mp3(raw_audio)
+            is_m4a = bool(info.get("is_m4a") or info.get("format_id") == "m4a")
             extension = info.get("extension", ".mp3")
+            if is_m4a:
+                if normalize:
+                    raw_audio = normalize_audio(raw_audio, extension=".m4a", target_extension=".mp3")
+                else:
+                    raw_audio = convert_m4a_to_mp3(raw_audio)
+            elif normalize:
+                raw_audio = normalize_audio(raw_audio, extension=extension)
+
             final_audio = embed_metadata(raw_audio, extension, info)
             filename = info.get("filename") or f"track_{index + 1}{extension}"
             return (index, filename, final_audio)
