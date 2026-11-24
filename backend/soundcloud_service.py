@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import urllib.parse
 import zipfile
 from typing import Callable
@@ -53,6 +54,172 @@ HEADERS = {
     )
 }
 TIMEOUT = 10
+
+# Toegestane SoundCloud hostnamen voor SSRF-beveiliging
+ALLOWED_SOUNDCLOUD_HOSTS = {
+    "soundcloud.com",
+    "www.soundcloud.com",
+    "m.soundcloud.com",
+    "on.soundcloud.com",
+}
+
+# Gereserveerde Windows bestandsnamen ter voorkoming van path traversal / OS fouten
+WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+# Maximale limieten voor resource-bescherming
+MAX_STREAM_SIZE = 250 * 1024 * 1024  # 250 MB
+MAX_ZIP_TRACKS = 50
+MAX_FILENAME_LENGTH = 120
+
+# Semaphore voor gelijktijdige FFmpeg-conversies
+_ffmpeg_semaphore = threading.Semaphore(2)
+
+
+def validate_soundcloud_url(url: str) -> str:
+    """
+    Valideert of een opgegeven URL een legitieme SoundCloud-URL is via HTTPS.
+    Blokkeert onveilige schema's (zoals http:// of file://), IP-adressen, localhost en vreemde domeinen (SSRF-beveiliging).
+
+    Args:
+        url: De te valideren URL string.
+
+    Returns:
+        De genormaliseerde, opgeschoonde URL string.
+
+    Raises:
+        SoundCloudError: Als de URL ongeldig, onveilig of niet van SoundCloud is.
+    """
+    if not url or not isinstance(url, str):
+        raise SoundCloudError("Geen geldige SoundCloud-URL opgegeven.")
+
+    trimmed = url.strip()
+    if not trimmed:
+        raise SoundCloudError("Geen geldige SoundCloud-URL opgegeven.")
+
+    try:
+        parsed = urllib.parse.urlparse(trimmed)
+    except Exception as exc:
+        raise SoundCloudError(f"Ongeldige URL-syntaxis: {exc}") from exc
+
+    if parsed.scheme.lower() != "https":
+        raise SoundCloudError(
+            f"Onveilig URL-schema '{parsed.scheme}://'. Alleen beveiligde 'https://' SoundCloud-links zijn toegestaan."
+        )
+
+    hostname = (parsed.hostname or "").lower()
+    if not hostname or hostname not in ALLOWED_SOUNDCLOUD_HOSTS:
+        raise SoundCloudError(
+            f"Ongeldig SoundCloud-domein '{hostname}'. Alleen officiële SoundCloud-links zijn toegestaan "
+            f"({', '.join(sorted(ALLOWED_SOUNDCLOUD_HOSTS))})."
+        )
+
+    if not parsed.path or parsed.path.strip("/") == "":
+        raise SoundCloudError("Ongeldige SoundCloud-URL: er is geen track- of playlist-pad opgegeven.")
+
+    return trimmed
+
+
+def validate_cdn_url(url: str) -> str:
+    """
+    Valideert of een stream- of CDN-link afkomstig is van een geautoriseerd SoundCloud CDN-domein
+    (*.soundcloud.com of *.sndcdn.com) ter voorkoming van SSRF-aanvallen via audio-streams.
+
+    Args:
+        url: De stream- of CDN-URL.
+
+    Returns:
+        De gevalideerde URL string.
+
+    Raises:
+        SoundCloudError: Als het doeldomein niet geautoriseerd is.
+    """
+    if not url or not isinstance(url, str):
+        raise SoundCloudError("Ongeldige stream- of CDN-URL.")
+
+    trimmed = url.strip()
+    try:
+        parsed = urllib.parse.urlparse(trimmed)
+    except Exception as exc:
+        raise SoundCloudError(f"Ongeldige stream-URL-syntaxis: {exc}") from exc
+
+    if parsed.scheme.lower() not in ("https", "http"):
+        raise SoundCloudError(f"Onveilig URL-schema '{parsed.scheme}://' voor audiostream.")
+
+    hostname = (parsed.hostname or "").lower()
+    is_valid_host = (
+        hostname == "soundcloud.com"
+        or hostname.endswith(".soundcloud.com")
+        or hostname == "sndcdn.com"
+        or hostname.endswith(".sndcdn.com")
+    )
+    if not hostname or not is_valid_host:
+        raise SoundCloudError(
+            f"Onveilige audiostream-locatie: domein '{hostname}' behoort niet tot SoundCloud of het SoundCloud CDN."
+        )
+
+    return trimmed
+
+
+def sanitize_filename(name: str, extension: str = "") -> str:
+    """
+    Schoont een bestandsnaam grondig op tegen Path Traversal en ongeldige Windows-tekens.
+
+    - Verwijdert padscheidingstekens (/, \\, ..) en stuurtekens.
+    - Vervangt ongeldige Windows-tekens (<>:"/\\|?*).
+    - Voorkomt gereserveerde Windows-namen (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+    - Begrenst de bestandsnaam op maximaal 120 tekens (exclusief extensie).
+    - Zorgt voor een geldige extensie en veilige fallback als de naam leeg zou raken.
+
+    Args:
+        name: De gewenste basisbestandsnaam of volledige bestandsnaam.
+        extension: Optionele extensie (bijv. '.mp3', '.zip').
+
+    Returns:
+        Veilige bestandsnaam met extensie.
+    """
+    if not name or not isinstance(name, str):
+        raw_name = "track"
+    else:
+        raw_name = name.strip()
+
+    # Normaliseer extensie
+    clean_ext = ""
+    if extension:
+        clean_ext = ("." + extension.lstrip(".")).lower()
+
+    # Als de naam al eindigt op de extensie, strip die van de basisnaam
+    if clean_ext and raw_name.lower().endswith(clean_ext):
+        raw_name = raw_name[:-len(clean_ext)]
+    elif "." in raw_name and not clean_ext:
+        parts = raw_name.rsplit(".", 1)
+        raw_name, clean_ext = parts[0], f".{parts[1].lower()}"
+
+    # Verwijder directory traversal patronen (..)
+    while ".." in raw_name:
+        raw_name = raw_name.replace("..", "")
+
+    # Vervang ongeldige Windows tekens en padscheidingstekens door een underscore
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f-\x9f]', '_', raw_name)
+
+    # Vervang meervoudige spaties of underscores door een enkele spatie
+    sanitized = re.sub(r'[\s_]+', ' ', sanitized).strip(" ._")
+
+    # Begrens op maximaal 120 tekens (exclusief extensie)
+    if len(sanitized) > MAX_FILENAME_LENGTH:
+        sanitized = sanitized[:MAX_FILENAME_LENGTH].rstrip(" ._")
+
+    # Controleer op lege naam of gereserveerde Windows bestandsnamen
+    if not sanitized:
+        sanitized = "track"
+    elif sanitized.upper() in WINDOWS_RESERVED_NAMES:
+        sanitized = f"track_{sanitized}"
+
+    return f"{sanitized}{clean_ext}"
+
 
 _cached_client_id: str | None = None
 _on_client_id_reset_callbacks: list[Callable[[], None]] = []
@@ -241,8 +408,9 @@ def get_track_info(
     Raises:
         SoundCloudError: Bij netwerk- of API-fouten of onbekend format_id.
     """
+    validated_url = validate_soundcloud_url(track_url)
     active_client_id = client_id or get_cached_client_id()
-    resolve_url = f"https://api-v2.soundcloud.com/resolve?url={track_url}&client_id={active_client_id}"
+    resolve_url = f"https://api-v2.soundcloud.com/resolve?url={validated_url}&client_id={active_client_id}"
 
     resp, active_client_id = _fetch_with_retry(resolve_url, client_id=active_client_id)
 
@@ -595,11 +763,9 @@ def get_track_info(
     direct_url = selected_format["direct_url"]
     is_artist_download = selected_format["is_artist_download"]
 
-    # Veilige bestandsnaam met juiste extensie
-    safe_artist = "".join(c for c in artist if c.isalnum() or c in " -_").strip()
-    safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()
-    filename = f"{safe_artist} - {safe_title}{extension}" if safe_artist else f"{safe_title}{extension}"
-    filename = filename or f"track{extension}"
+    # Veilige bestandsnaam met juiste extensie via centrale sanitize_filename
+    base_candidate = f"{artist} - {title}" if artist else title
+    filename = sanitize_filename(base_candidate, extension)
 
     return {
         "type": "track",
@@ -648,7 +814,7 @@ def get_download_url(
         SoundCloudError: Bij netwerk- of API-fouten.
     """
     if is_direct or not stream_url.startswith("https://api-v2.soundcloud.com/media/"):
-        return stream_url
+        return validate_cdn_url(stream_url)
 
     params = {}
     if track_authorization:
@@ -678,7 +844,7 @@ def get_download_url(
     if not download_url:
         raise SoundCloudError("Geen geldige downloadlocatie ontvangen van SoundCloud.")
 
-    return download_url
+    return validate_cdn_url(download_url)
 
 
 def search_tracks(
@@ -771,15 +937,18 @@ def stream_audio(download_url: str):
     """
     Generator die het audiobestand in chunks van 64 KB streamt.
     Ondersteunt zowel directe progressive MP3-bestanden als HLS (.m3u8) streams.
+    Controleert CDN-domeinen tegen SSRF en hanteert een maximale streamlimiet van 250 MB.
 
     Yields:
         Bytes-chunks van het MP3-bestand.
 
     Raises:
-        SoundCloudError: Bij netwerkfouten tijdens het streamen.
+        SoundCloudError: Bij netwerkfouten, SSRF-pogingen of overschrijding van de maximale grootte.
     """
+    download_url = validate_cdn_url(download_url)
     clean_url = download_url.split("?")[0].lower()
     is_hls = clean_url.endswith(".m3u8") or ".m3u8" in clean_url or "/hls" in clean_url
+    total_streamed = 0
 
     if is_hls:
         try:
@@ -807,20 +976,29 @@ def stream_audio(download_url: str):
 
         # Stream eerst het initialisatiesegment indien aanwezig (vereist voor fMP4 / M4A)
         if init_url:
+            init_url = validate_cdn_url(init_url)
             try:
                 with requests.get(init_url, headers=HEADERS, stream=True, timeout=TIMEOUT) as init_resp:
                     if init_resp.status_code == 200:
                         for chunk in init_resp.iter_content(chunk_size=1024 * 64):
                             if chunk:
+                                total_streamed += len(chunk)
+                                if total_streamed > MAX_STREAM_SIZE:
+                                    raise SoundCloudError(
+                                        "Audiostream overschrijdt de maximale bestandsgrootte van 250 MB."
+                                    )
                                 yield chunk
                     else:
                         raise SoundCloudError(
                             f"Fout bij downloaden van HLS init-segment: HTTP {init_resp.status_code}"
                         )
+            except SoundCloudError:
+                raise
             except requests.RequestException as exc:
                 raise SoundCloudError(f"Netwerkfout tijdens streamen van init-segment: {exc}") from exc
 
         def _fetch_segment(seg_url: str) -> bytes:
+            seg_url = validate_cdn_url(seg_url)
             try:
                 resp = requests.get(seg_url, headers=HEADERS, timeout=TIMEOUT)
                 if resp.status_code != 200:
@@ -844,6 +1022,11 @@ def stream_audio(download_url: str):
             with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
                 for segment_chunk in executor.map(_fetch_segment, segment_urls):
                     if segment_chunk:
+                        total_streamed += len(segment_chunk)
+                        if total_streamed > MAX_STREAM_SIZE:
+                            raise SoundCloudError(
+                                "Audiostream overschrijdt de maximale bestandsgrootte van 250 MB."
+                            )
                         yield segment_chunk
         except SoundCloudError:
             raise
@@ -866,7 +1049,14 @@ def stream_audio(download_url: str):
                     )
                 for chunk in resp.iter_content(chunk_size=1024 * 64):
                     if chunk:
+                        total_streamed += len(chunk)
+                        if total_streamed > MAX_STREAM_SIZE:
+                            raise SoundCloudError(
+                                "Audiostream overschrijdt de maximale bestandsgrootte van 250 MB."
+                            )
                         yield chunk
+        except SoundCloudError:
+            raise
         except requests.RequestException as exc:
             raise SoundCloudError(f"Netwerkfout tijdens streamen: {exc}") from exc
 
@@ -987,41 +1177,46 @@ def convert_m4a_to_mp3(m4a_bytes: bytes) -> bytes:
         logger.error("FFmpeg executable niet gevonden via PATH of imageio_ffmpeg.")
         raise SoundCloudError("FFmpeg executable niet gevonden op het systeem.")
 
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            input_file = Path(tmpdir) / "input.m4a"
-            output_file = Path(tmpdir) / "output.mp3"
+    with _ffmpeg_semaphore:
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                input_file = Path(tmpdir) / "input.m4a"
+                output_file = Path(tmpdir) / "output.mp3"
 
-            input_file.write_bytes(m4a_bytes)
+                input_file.write_bytes(m4a_bytes)
 
-            cmd = [
-                str(ffmpeg_exe),
-                "-y",
-                "-i",
-                str(input_file),
-                "-vn",
-                "-acodec",
-                "libmp3lame",
-                "-b:a",
-                "256k",
-                str(output_file),
-            ]
+                cmd = [
+                    str(ffmpeg_exe),
+                    "-y",
+                    "-i",
+                    str(input_file),
+                    "-vn",
+                    "-acodec",
+                    "libmp3lame",
+                    "-b:a",
+                    "256k",
+                    str(output_file),
+                ]
 
-            subprocess.run(cmd, check=True, capture_output=True)
+                subprocess.run(cmd, check=True, capture_output=True, shell=False, timeout=120)
 
-            if not output_file.exists():
-                raise SoundCloudError("FFmpeg heeft geen output.mp3 bestand gegenereerd.")
+                if not output_file.exists():
+                    raise SoundCloudError("FFmpeg heeft geen output.mp3 bestand gegenereerd.")
 
-            return output_file.read_bytes()
-    except subprocess.CalledProcessError as exc:
-        err_msg = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc)
-        logger.error(f"FFmpeg-conversiefout (exit code {exc.returncode}): {err_msg}", exc_info=True)
-        raise SoundCloudError(f"Fout tijdens audioconversie naar MP3: {err_msg}") from exc
-    except SoundCloudError:
-        raise
-    except Exception as exc:
-        logger.error(f"Onverwachte fout tijdens audioconversie naar MP3: {exc}", exc_info=True)
-        raise SoundCloudError(f"Onverwachte fout tijdens audioconversie naar MP3: {exc}") from exc
+                return output_file.read_bytes()
+        except subprocess.TimeoutExpired as exc:
+            logger.error("FFmpeg-conversie is verlopen na 120 seconden.", exc_info=True)
+            raise SoundCloudError("Audioconversie via FFmpeg is verlopen na 120 seconden.") from exc
+        except subprocess.CalledProcessError as exc:
+            err_msg = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else str(exc)
+            logger.error(f"FFmpeg-conversiefout (exit code {exc.returncode}): {err_msg}", exc_info=True)
+            safe_err = re.sub(r"[a-zA-Z]:\\[^\s'\"]+", "[bestand]", err_msg)
+            raise SoundCloudError(f"Fout tijdens audioconversie naar MP3: {safe_err}") from exc
+        except SoundCloudError:
+            raise
+        except Exception as exc:
+            logger.error(f"Onverwachte fout tijdens audioconversie naar MP3: {exc}", exc_info=True)
+            raise SoundCloudError("Onverwachte fout tijdens audioconversie naar MP3.") from exc
 
 
 def download_tracks_as_zip(
@@ -1036,10 +1231,18 @@ def download_tracks_as_zip(
         Bytes van het gecomprimeerde ZIP-bestand.
 
     Raises:
-        SoundCloudError: Indien er geen tracks gedownload kunnen worden.
+        SoundCloudError: Indien er geen tracks gedownload kunnen worden of de limiet overschreden is.
     """
     if not track_urls:
         raise SoundCloudError("Geen tracks opgegeven om te downloaden.")
+
+    if len(track_urls) > MAX_ZIP_TRACKS:
+        raise SoundCloudError(
+            f"Maximaal {MAX_ZIP_TRACKS} tracks per ZIP-archief toegestaan (ontvangen: {len(track_urls)})."
+        )
+
+    # Valideer alle URLs vooraf ter bescherming tegen SSRF
+    validated_urls = [validate_soundcloud_url(u) for u in track_urls]
 
     active_client_id = client_id or get_cached_client_id()
 
@@ -1073,7 +1276,7 @@ def download_tracks_as_zip(
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [
             executor.submit(_download_one, idx, url)
-            for idx, url in enumerate(track_urls)
+            for idx, url in enumerate(validated_urls)
         ]
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
@@ -1085,20 +1288,24 @@ def download_tracks_as_zip(
     if not indexed_results:
         raise SoundCloudError("Geen van de geselecteerde tracks kon worden gedownload.")
 
-    # Schrijf alle audiobestanden naar een ZIP in het geheugen
+    # Schrijf alle audiobestanden naar een ZIP in het geheugen met veilige bestandsnamen
     zip_buffer = io.BytesIO()
     seen_names: dict[str, int] = {}
     with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for _, filename, audio_bytes in indexed_results:
-            name = filename
-            if name in seen_names:
-                seen_names[name] += 1
-                base, ext = os.path.splitext(name) if "." in name else (name, ".mp3")
-                name = f"{base} ({seen_names[filename]}){ext}"
-            else:
-                seen_names[name] = 1
+            base_filename = os.path.basename(filename)
+            base, ext = os.path.splitext(base_filename)
+            clean_name = sanitize_filename(base, ext)
 
-            zf.writestr(name, audio_bytes)
+            if clean_name in seen_names:
+                seen_names[clean_name] += 1
+                name_base, name_ext = os.path.splitext(clean_name)
+                entry_name = f"{name_base} ({seen_names[clean_name]}){name_ext}"
+            else:
+                seen_names[clean_name] = 1
+                entry_name = clean_name
+
+            zf.writestr(entry_name, audio_bytes)
 
     return zip_buffer.getvalue()
 

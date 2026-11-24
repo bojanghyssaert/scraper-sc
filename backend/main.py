@@ -13,6 +13,7 @@ import io
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+import re
 import requests as req_lib
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -59,6 +60,9 @@ try:
         download_tracks_as_zip,
         embed_metadata,
         convert_m4a_to_mp3,
+        validate_soundcloud_url,
+        sanitize_filename,
+        MAX_ZIP_TRACKS,
         HEADERS,
         TIMEOUT,
     )
@@ -78,19 +82,46 @@ except ImportError:
         download_tracks_as_zip,
         embed_metadata,
         convert_m4a_to_mp3,
+        validate_soundcloud_url,
+        sanitize_filename,
+        MAX_ZIP_TRACKS,
         HEADERS,
         TIMEOUT,
     )
 
 app = FastAPI(title="SoundCloud Downloader API", version="1.0.0")
 
-# CORS: sta de Vite-dev-server toe (inclusief POST voor zip downloads)
+# CORS: sta strikt de lokale Vite-dev-server toe
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """
+    Voegt standaard security-headers toe aan alle HTTP-antwoorden.
+    """
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _sanitize_error_detail(detail: str) -> str:
+    """
+    Verwijdert interne bestandspaden (bijv. C:\\...) en Python stacktraces uit foutmeldingen
+    zodat deze nooit naar de frontend lekken.
+    """
+    if not isinstance(detail, str):
+        return "Er is een fout opgetreden."
+    cleaned = re.sub(r"[a-zA-Z]:\\[^\s'\"]+", "[bestand]", detail)
+    cleaned = re.sub(r"Traceback \(most recent call last\):.*", "", cleaned, flags=re.DOTALL)
+    return cleaned.strip() or "Er is een fout opgetreden."
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -102,9 +133,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         f"HTTP-fout {exc.status_code} op {request.method} {request.url.path}: {exc.detail}",
         exc_info=True,
     )
+    safe_detail = _sanitize_error_detail(exc.detail) if isinstance(exc.detail, str) else exc.detail
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content={"detail": safe_detail},
     )
 
 
@@ -202,9 +234,9 @@ def track_info(url: str = Query(..., description="Publieke SoundCloud track-URL"
     try:
         info = get_track_info(url, client_id)
     except SoundCloudDRMError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=_sanitize_error_detail(str(exc)))
     except SoundCloudError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_sanitize_error_detail(str(exc)))
 
     if info.get("type") == "playlist":
         return {
@@ -253,21 +285,21 @@ def download_track(
                 is_direct=info.get("stream_protocol") == "direct",
             )
     except SoundCloudDRMError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=_sanitize_error_detail(str(exc)))
     except SoundCloudError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_sanitize_error_detail(str(exc)))
 
     try:
         chunks = stream_audio(download_url)
         raw_audio = b"".join(chunks)
     except SoundCloudError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_sanitize_error_detail(str(exc)))
 
     if info.get("is_m4a") or info.get("format_id") == "m4a":
         try:
             raw_audio = convert_m4a_to_mp3(raw_audio)
         except SoundCloudError as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
+            raise HTTPException(status_code=500, detail=_sanitize_error_detail(str(exc)))
 
     extension = info.get("extension", ".mp3")
     final_audio = embed_metadata(raw_audio, extension, info)
@@ -311,21 +343,21 @@ def preview_track(
                 is_direct=info.get("stream_protocol") == "direct",
             )
     except SoundCloudDRMError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=_sanitize_error_detail(str(exc)))
     except SoundCloudError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_sanitize_error_detail(str(exc)))
 
     try:
         chunks = stream_audio(download_url)
         raw_audio = b"".join(chunks)
     except SoundCloudError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_sanitize_error_detail(str(exc)))
 
     if info.get("is_m4a") or info.get("format_id") == "m4a":
         try:
             raw_audio = convert_m4a_to_mp3(raw_audio)
         except SoundCloudError as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
+            raise HTTPException(status_code=500, detail=_sanitize_error_detail(str(exc)))
 
     media_type = info.get("media_type", "audio/mpeg")
 
@@ -349,19 +381,26 @@ def search(
 ):
     """
     Zoekt tracks op SoundCloud op basis van artiest of titel.
+    Valideert dat de zoekterm niet leeg is en maximaal 120 tekens bevat.
     Geeft een lijst terug van tracks met title, artist, artwork_url, duration_ms, permalink_url en is_drm.
     """
+    cleaned_q = q.strip() if isinstance(q, str) else ""
+    if not cleaned_q:
+        raise HTTPException(status_code=400, detail="Zoekopdracht mag niet leeg zijn.")
+    if len(cleaned_q) > 120:
+        raise HTTPException(status_code=400, detail="Zoekopdracht mag maximaal 120 tekens bevatten.")
+
     client_id = _get_cached_client_id()
     try:
-        results = search_tracks(q, client_id, limit=limit)
+        results = search_tracks(cleaned_q, client_id, limit=limit)
         return {"results": results}
     except SoundCloudError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_sanitize_error_detail(str(exc)))
 
 
 class DownloadZipRequest(BaseModel):
-    playlist_title: str = Field(..., description="Titel van de afspeellijst of het album")
-    track_urls: list[str] = Field(..., description="Lijst van SoundCloud track-URLs om te downloaden")
+    playlist_title: str = Field(..., max_length=200, description="Titel van de afspeellijst of het album")
+    track_urls: list[str] = Field(..., max_length=50, description="Lijst van SoundCloud track-URLs om te downloaden")
 
 
 @app.post("/api/download-zip")
@@ -369,19 +408,27 @@ def download_zip(payload: DownloadZipRequest):
     """
     Downloadt geselecteerde tracks van een playlist, voorziet ze van metadata-tags,
     bundelt ze in een .zip-archief en retourneert dit via StreamingResponse.
+    Beperkt tot maximaal 50 tracks en valideert elke URL tegen SSRF.
     """
     if not payload.track_urls:
         raise HTTPException(status_code=400, detail="Geen tracks geselecteerd voor download.")
+
+    if len(payload.track_urls) > 50:
+        raise HTTPException(status_code=400, detail="Maximaal 50 tracks per ZIP-download toegestaan.")
+
+    for u in payload.track_urls:
+        try:
+            validate_soundcloud_url(u)
+        except SoundCloudError as exc:
+            raise HTTPException(status_code=400, detail=_sanitize_error_detail(str(exc)))
 
     client_id = _get_cached_client_id()
     try:
         zip_bytes = download_tracks_as_zip(payload.track_urls, client_id)
     except SoundCloudError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=_sanitize_error_detail(str(exc)))
 
-    safe_title = "".join(c for c in payload.playlist_title if c.isalnum() or c in " -_").strip()
-    safe_title = safe_title or "playlist"
-    filename = f"{safe_title}.zip"
+    filename = sanitize_filename(payload.playlist_title or "playlist", ".zip")
 
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
