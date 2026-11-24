@@ -1,17 +1,52 @@
-# Python environment
+# ==========================================
+# SoundCloud Scraper - .gitignore
+# ==========================================
+
+# Python virtuele omgevingen
 venv/
+.venv/
+env/
+.env
+.env.*
+*.env
+
+# Python byte-code en cache
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pytest_cache/
 
-# Gedownloade audio
-*.mp3
-*.ogg
-*.wav
-
-# Logs
+# Logging
 logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
 
-# Systeem bestanden
+# Node / Frontend afhankelijkheden en builds
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+dist-ssr/
+*.local
+
+# Tijdelijke & gedownloade audio- en archiefbestanden
+*.mp3
+*.m4a
+*.wav
+*.ogg
+*.flac
+*.aac
+*.zip
+
+# IDE's en editors
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# Besturingssysteem
 .DS_Store
+Thumbs.db
+desktop.ini
