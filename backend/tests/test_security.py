@@ -83,15 +83,34 @@ def test_validate_soundcloud_url_allows_legitimate(valid_url):
 
 def test_validate_cdn_url_blocks_unauthorized_domains():
     """Verifieert dat CDN- en streamvalidatie niet-SoundCloud domeinen weigert."""
+    # Weigert willekeurige externe domeinen
     with pytest.raises(SoundCloudError, match="behoort niet tot SoundCloud"):
         validate_cdn_url("https://evil-server.com/malicious.mp3")
 
+    # Weigert IP-adressen (privé of metadata)
     with pytest.raises(SoundCloudError, match="behoort niet tot SoundCloud"):
-        validate_cdn_url("http://169.254.169.254/meta-data")
+        validate_cdn_url("https://169.254.169.254/meta-data")
+
+    with pytest.raises(SoundCloudError, match="behoort niet tot SoundCloud"):
+        validate_cdn_url("https://127.0.0.1/audio.mp3")
+
+    # Weigert localhost
+    with pytest.raises(SoundCloudError, match="behoort niet tot SoundCloud"):
+        validate_cdn_url("https://localhost/audio.mp3")
+
+    # Weigert onveilige URL-schema's (uitsluitend HTTPS toegestaan)
+    with pytest.raises(SoundCloudError, match="Onveilig URL-schema"):
+        validate_cdn_url("http://cf-media.sndcdn.com/audio.mp3")
+
+    with pytest.raises(SoundCloudError, match="Onveilig URL-schema"):
+        validate_cdn_url("file:///C:/Windows/win.ini")
 
     # Toegestane CDN-domeinen moeten slagen
     assert validate_cdn_url("https://cf-media.sndcdn.com/audio.mp3") == "https://cf-media.sndcdn.com/audio.mp3"
     assert validate_cdn_url("https://api-v2.soundcloud.com/media/stream") == "https://api-v2.soundcloud.com/media/stream"
+    assert validate_cdn_url("https://playback.media-streaming.soundcloud.cloud/playlist.m3u8") == "https://playback.media-streaming.soundcloud.cloud/playlist.m3u8"
+    assert validate_cdn_url("https://audio.akamaized.net/playlist.m3u8") == "https://audio.akamaized.net/playlist.m3u8"
+    assert validate_cdn_url("https://d1234.cloudfront.net/playlist.m3u8") == "https://d1234.cloudfront.net/playlist.m3u8"
 
 
 def test_api_endpoints_reject_ssrf(client):

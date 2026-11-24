@@ -7,6 +7,7 @@ track-metadata en de download-URL — zonder enige GUI-afhankelijkheid.
 
 import concurrent.futures
 import io
+import ipaddress
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -62,6 +63,15 @@ ALLOWED_SOUNDCLOUD_HOSTS = {
     "m.soundcloud.com",
     "on.soundcloud.com",
 }
+
+# Toegestane CDN-domeinen voor audiostream SSRF-beveiliging
+ALLOWED_CDN_DOMAINS = (
+    "soundcloud.com",
+    "sndcdn.com",
+    "soundcloud.cloud",
+    "akamaized.net",
+    "cloudfront.net",
+)
 
 # Gereserveerde Windows bestandsnamen ter voorkoming van path traversal / OS fouten
 WINDOWS_RESERVED_NAMES = {
@@ -126,7 +136,8 @@ def validate_soundcloud_url(url: str) -> str:
 def validate_cdn_url(url: str) -> str:
     """
     Valideert of een stream- of CDN-link afkomstig is van een geautoriseerd SoundCloud CDN-domein
-    (*.soundcloud.com of *.sndcdn.com) ter voorkoming van SSRF-aanvallen via audio-streams.
+    (*.soundcloud.com, *.sndcdn.com, *.soundcloud.cloud, *.akamaized.net, *.cloudfront.net)
+    ter voorkoming van SSRF-aanvallen via audio-streams.
 
     Args:
         url: De stream- of CDN-URL.
@@ -135,7 +146,7 @@ def validate_cdn_url(url: str) -> str:
         De gevalideerde URL string.
 
     Raises:
-        SoundCloudError: Als het doeldomein niet geautoriseerd is.
+        SoundCloudError: Als het URL-schema niet HTTPS is of het doeldomein niet geautoriseerd is.
     """
     if not url or not isinstance(url, str):
         raise SoundCloudError("Ongeldige stream- of CDN-URL.")
@@ -146,17 +157,38 @@ def validate_cdn_url(url: str) -> str:
     except Exception as exc:
         raise SoundCloudError(f"Ongeldige stream-URL-syntaxis: {exc}") from exc
 
-    if parsed.scheme.lower() not in ("https", "http"):
-        raise SoundCloudError(f"Onveilig URL-schema '{parsed.scheme}://' voor audiostream.")
+    if parsed.scheme.lower() != "https":
+        raise SoundCloudError(
+            f"Onveilig URL-schema '{parsed.scheme}://' voor audiostream: behoort niet tot SoundCloud of het SoundCloud CDN. Alleen 'https://' is toegestaan."
+        )
+
+    if parsed.username or parsed.password:
+        raise SoundCloudError("Inloggegevens in de stream-URL zijn niet toegestaan.")
 
     hostname = (parsed.hostname or "").lower()
-    is_valid_host = (
-        hostname == "soundcloud.com"
-        or hostname.endswith(".soundcloud.com")
-        or hostname == "sndcdn.com"
-        or hostname.endswith(".sndcdn.com")
+    if not hostname:
+        raise SoundCloudError("Geen geldig hostadres in stream-URL.")
+
+    # Blokkeer localhost expliciet
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise SoundCloudError(
+            f"Onveilige audiostream-locatie: localhost '{hostname}' behoort niet tot SoundCloud of het SoundCloud CDN."
+        )
+
+    # Blokkeer IP-adressen (zoals 127.0.0.1, 169.254.169.254, etc.)
+    try:
+        ipaddress.ip_address(hostname)
+        raise SoundCloudError(
+            f"Onveilige audiostream-locatie: IP-adres '{hostname}' behoort niet tot SoundCloud of het SoundCloud CDN."
+        )
+    except ValueError:
+        pass
+
+    is_valid_host = any(
+        hostname == domain or hostname.endswith("." + domain)
+        for domain in ALLOWED_CDN_DOMAINS
     )
-    if not hostname or not is_valid_host:
+    if not is_valid_host:
         raise SoundCloudError(
             f"Onveilige audiostream-locatie: domein '{hostname}' behoort niet tot SoundCloud of het SoundCloud CDN."
         )
@@ -650,14 +682,19 @@ def get_track_info(
         if not stream_u:
             return "", False
         try:
+            current_cid = get_cached_client_id() or active_client_id
             cdn = get_download_url(
                 stream_u,
-                client_id=active_client_id,
+                client_id=current_cid,
                 track_authorization=track_authorization,
                 is_direct=False,
             )
             return stream_u, bool(cdn)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                f"Fout bij valideren van transcoding {stream_u}: {exc}",
+                exc_info=True,
+            )
             return stream_u, False
 
     valid_stream_urls: set[str] = set()
@@ -667,6 +704,11 @@ def get_track_info(
             for s_url, is_valid in executor.map(_validate_transcoding, candidate_cands):
                 if is_valid and s_url:
                     valid_stream_urls.add(s_url)
+
+    # Werk eventueel de actieve client_id bij als die vernieuwd is tijdens validatie
+    refreshed_cid = get_cached_client_id()
+    if refreshed_cid:
+        active_client_id = refreshed_cid
 
     # Voeg MP3 toe als optie indien een geldige stream beschikbaar is (progressive heeft voorkeur)
     chosen_mp3 = None
@@ -813,7 +855,7 @@ def get_download_url(
     Raises:
         SoundCloudError: Bij netwerk- of API-fouten.
     """
-    if is_direct or not stream_url.startswith("https://api-v2.soundcloud.com/media/"):
+    if is_direct or not stream_url.startswith("https://api-v2.soundcloud.com/"):
         return validate_cdn_url(stream_url)
 
     params = {}

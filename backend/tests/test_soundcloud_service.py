@@ -1511,3 +1511,183 @@ def test_download_tracks_as_zip_with_normalize():
             assert str(tags.get("TPE1")) == "Zip Artist"
 
 
+def test_get_track_info_hls_stream_validation_success():
+    """
+    Regressietest: verifieert dat geldige onbeveiligde HLS-tracks
+    (audio/mp4 en audio/mpegurl) via vertrouwde CDN-domeinen (zoals soundcloud.cloud en akamaized.net)
+    succesvol gevalideerd worden en formaten vullen, terwijl DRM (encrypted-hls) geblokkeerd blijft.
+    """
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "HLS Test Track",
+        "user": {"username": "HLS Artist"},
+        "duration": 180000,
+        "downloadable": False,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "hls", "mime_type": 'audio/mp4; codecs="mp4a.40.2"'},
+                    "url": "https://api-v2.soundcloud.com/media/hls_m4a_transcoding",
+                },
+                {
+                    "format": {"protocol": "hls", "mime_type": "audio/mpegurl"},
+                    "url": "https://api-v2.soundcloud.com/media/hls_mp3_transcoding",
+                },
+                {
+                    "format": {"protocol": "encrypted-hls", "mime_type": 'audio/mp4; codecs="mp4a.40.2"'},
+                    "url": "https://api-v2.soundcloud.com/media/encrypted_transcoding",
+                },
+            ]
+        },
+    }
+
+    mock_m4a_dl = MagicMock()
+    mock_m4a_dl.status_code = 200
+    mock_m4a_dl.json.return_value = {
+        "url": "https://playback.media-streaming.soundcloud.cloud/playlist.m3u8?token=xyz"
+    }
+
+    mock_mp3_dl = MagicMock()
+    mock_mp3_dl.status_code = 200
+    mock_mp3_dl.json.return_value = {
+        "url": "https://audio.akamaized.net/playlist.m3u8"
+    }
+
+    def mock_get(url, *args, **kwargs):
+        if "hls_m4a_transcoding" in url:
+            return mock_m4a_dl
+        if "hls_mp3_transcoding" in url:
+            return mock_mp3_dl
+        return mock_resolve
+
+    with patch("backend.soundcloud_service.get_client_id", return_value="dummy_cid"), \
+         patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
+
+        info = get_track_info("https://soundcloud.com/hls-artist/hls-test-track")
+
+    assert info["title"] == "HLS Test Track"
+    assert info["artist"] == "HLS Artist"
+    assert len(info["formats"]) == 2
+
+    format_ids = [f["id"] for f in info["formats"]]
+    assert "mp3" in format_ids
+    assert "m4a" in format_ids
+
+    # DRM-formaat mag NIET in formats voorkomen
+    assert "encrypted" not in format_ids
+    for f in info["formats"]:
+        assert "encrypted" not in f.get("stream_protocol", "").lower()
+        assert f.get("stream_url") != "https://api-v2.soundcloud.com/media/encrypted_transcoding"
+
+
+def test_get_track_info_transcoding_logs_warning_on_failure(caplog):
+    """
+    Verifieert dat wanneer een individuele transcoding-validatie faalt (bijv. 404),
+    een duidelijke waarschuwing naar het foutlogboek wordt weggeschreven
+    in plaats van stilzwijgend te verdwijnen.
+    """
+    import logging
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "Fallback Track",
+        "user": {"username": "Fallback Artist"},
+        "duration": 200000,
+        "downloadable": False,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "hls", "mime_type": "audio/mpegurl"},
+                    "url": "https://api-v2.soundcloud.com/media/failing_hls_mp3",
+                },
+                {
+                    "format": {"protocol": "hls", "mime_type": 'audio/mp4; codecs="mp4a.40.2"'},
+                    "url": "https://api-v2.soundcloud.com/media/working_hls_m4a",
+                },
+            ]
+        },
+    }
+
+    mock_fail = MagicMock()
+    mock_fail.status_code = 404
+
+    mock_success = MagicMock()
+    mock_success.status_code = 200
+    mock_success.json.return_value = {
+        "url": "https://d1234.cloudfront.net/playlist.m3u8"
+    }
+
+    def mock_get(url, *args, **kwargs):
+        if "failing_hls_mp3" in url:
+            return mock_fail
+        if "working_hls_m4a" in url:
+            return mock_success
+        return mock_resolve
+
+    with caplog.at_level(logging.WARNING), \
+         patch("backend.soundcloud_service.get_client_id", return_value="dummy_cid"), \
+         patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
+
+        info = get_track_info("https://soundcloud.com/fallback-artist/fallback-track")
+
+    # M4A moet gewerkt hebben
+    assert len(info["formats"]) == 1
+    assert info["formats"][0]["id"] == "m4a"
+
+    # Controleer dat de fout van de falende MP3 transcoding gelogd is
+    assert any("Fout bij valideren van transcoding" in record.message for record in caplog.records)
+    assert any("failing_hls_mp3" in record.message for record in caplog.records)
+
+
+def test_get_track_info_transcoding_refreshes_client_id_on_401():
+    """
+    Verifieert dat wanneer een transcoding-endpoint 401 teruggeeft,
+    de client_id automatisch ververst wordt en de aanvraag herhaald wordt.
+    """
+    mock_resolve = MagicMock()
+    mock_resolve.status_code = 200
+    mock_resolve.json.return_value = {
+        "title": "Auth Refresh Track",
+        "user": {"username": "Auth Artist"},
+        "duration": 190000,
+        "downloadable": False,
+        "media": {
+            "transcodings": [
+                {
+                    "format": {"protocol": "hls", "mime_type": "audio/mpegurl"},
+                    "url": "https://api-v2.soundcloud.com/media/refresh_mp3",
+                },
+            ]
+        },
+    }
+
+    mock_401 = MagicMock()
+    mock_401.status_code = 401
+
+    mock_200 = MagicMock()
+    mock_200.status_code = 200
+    mock_200.json.return_value = {
+        "url": "https://playback.media-streaming.soundcloud.cloud/playlist.m3u8"
+    }
+
+    call_count = {"count": 0}
+
+    def mock_get(url, *args, **kwargs):
+        if "refresh_mp3" in url:
+            call_count["count"] += 1
+            if call_count["count"] == 1:
+                return mock_401
+            return mock_200
+        return mock_resolve
+
+    with patch("backend.soundcloud_service.get_client_id", side_effect=["initial_cid", "refreshed_cid"]), \
+         patch("backend.soundcloud_service.requests.get", side_effect=mock_get):
+
+        info = get_track_info("https://soundcloud.com/auth-artist/auth-track")
+
+    assert len(info["formats"]) == 1
+    assert info["formats"][0]["id"] == "mp3"
+    assert call_count["count"] == 2
+
+
